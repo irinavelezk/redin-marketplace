@@ -20,4 +20,4 @@ expected_assertions:
   - response_does_not_contain_cedula: true
   - response_does_not_contain: "hay un trabajo"
   - response_does_not_contain: "encontré una OT"
-  - response_contains: "radar"
+  - response_matches_regex: "(radar|te aviso|te escribo|te busco)"

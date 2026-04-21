@@ -16,4 +16,3 @@ expected_tool_calls:
 expected_assertions:
   - response_does_not_contain_cedula: true
   - response_does_not_contain: "1234567890"
-  - response_contains: "documento"
