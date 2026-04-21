@@ -79,25 +79,26 @@ export async function readPendingOts(
     }
   }
 
-  let q = ctx.supabase
+  const { data: rawOts, error } = await ctx.supabase
     .from("ots_mirror")
     .select("*")
     .order("synced_at", { ascending: false })
     .limit(limit);
 
-  if (ciudadFilter) q = q.ilike("ciudad", ciudadFilter);
-  if (especialidadFilter) q = q.ilike("especialidad", `%${especialidadFilter}%`);
-
-  const { data: rawOts, error } = await q;
   if (error) {
     return err(`db error: ${error.message}`, { code: "db_error", retryable: true });
   }
 
-  // Filter out terminal estados in application code to avoid PostgREST syntax
-  // issues with quoted values containing spaces (e.g. "99. Perdida / Cancelada").
-  const ots = (rawOts ?? []).filter(
-    (o) => !o.estado || !TERMINAL_ESTADOS.includes(o.estado)
-  );
+  // Filter in application code — avoids PostgREST encoding issues with accented
+  // characters (e.g. "Bogotá", "plomería") and terminal estado values with spaces.
+  const ciudadLower = ciudadFilter?.toLowerCase();
+  const especLower = especialidadFilter?.toLowerCase();
+  const ots = (rawOts ?? []).filter((o) => {
+    if (TERMINAL_ESTADOS.includes(o.estado ?? "")) return false;
+    if (ciudadLower && !(o.ciudad ?? "").toLowerCase().includes(ciudadLower)) return false;
+    if (especLower && !(o.especialidad ?? "").toLowerCase().includes(especLower)) return false;
+    return true;
+  });
 
   if (ots.length === 0) {
     return ok({ ots: [], matched_by_profile: matchedByProfile });
