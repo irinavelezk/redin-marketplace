@@ -20,6 +20,7 @@ export interface ToolContext {
   defaultActor: Actor;
   escalationSink?: EscalationSink | null;
   now?: () => Date;
+  session_id?: string;
 }
 
 export function makeDefaultToolContext(overrides?: Partial<ToolContext>): ToolContext {
@@ -29,6 +30,7 @@ export function makeDefaultToolContext(overrides?: Partial<ToolContext>): ToolCo
     defaultActor: overrides?.defaultActor ?? "system",
     escalationSink: overrides?.escalationSink ?? null,
     now: overrides?.now,
+    session_id: overrides?.session_id,
   };
 }
 

@@ -3,6 +3,8 @@
 export * from "./types";
 export * from "./context";
 export * from "./schemas";
+export { recordEvent, logLlmCall, logLlmError } from "./events";
+export type { RecordEventInput, LlmCallMeta, LlmErrorMeta } from "./events";
 export { identifyUser } from "./identify-user";
 export { registerTecnico } from "./register-tecnico";
 export { readPendingOts } from "./read-pending-ots";

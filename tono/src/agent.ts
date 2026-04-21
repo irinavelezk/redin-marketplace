@@ -125,10 +125,13 @@ export async function handleMessage(
   if (!text) throw new Error("text required");
 
   const actor: Actor = `tecnico:${phone}`;
-  const toolCtx = input.toolCtx ?? makeDefaultToolContext({ defaultActor: actor });
-  const sessions = new SessionStore(toolCtx.supabase);
+  // Build a provisional context (no session_id yet) to get the supabase client.
+  const baseCtx = input.toolCtx ?? makeDefaultToolContext({ defaultActor: actor });
+  const sessions = new SessionStore(baseCtx.supabase);
 
   const session = await sessions.getOrCreate(phone, input.channel);
+  // Rebuild toolCtx with session_id now that we have it.
+  const toolCtx: ToolContext = { ...baseCtx, session_id: session.id };
   log.info("incoming", {
     phone,
     channel: input.channel,

@@ -14,10 +14,13 @@ import { createLogger } from "@redin/shared";
 import {
   TOOL_DECLARATIONS,
   dispatchTool,
+  logLlmCall,
+  logLlmError,
   type ToolContext,
   type ToolResult,
 } from "@redin/tools";
 import { TONO_SYSTEM_PROMPT } from "./prompts/tono-system";
+import { TONO_PROMPT_SHA } from "./prompt-sha";
 
 const log = createLogger("tono:gemini");
 
@@ -134,21 +137,31 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   const toolCallsMade: RunTurnResult["toolCallsMade"] = [];
 
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-    const response = await withTimeout(
-      ai.models.generateContent({
-        model: MODEL,
-        contents,
-        config: {
-          systemInstruction: TONO_SYSTEM_PROMPT,
-          tools: toolsForGemini(),
-          temperature: 0.3,
-          maxOutputTokens: 1024,
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
-      TIMEOUT_MS,
-      "gemini generateContent"
-    );
+    const t0 = Date.now();
+    let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
+    try {
+      response = await withTimeout(
+        ai.models.generateContent({
+          model: MODEL,
+          contents,
+          config: {
+            systemInstruction: TONO_SYSTEM_PROMPT,
+            tools: toolsForGemini(),
+            temperature: 0.3,
+            maxOutputTokens: 1024,
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        }),
+        TIMEOUT_MS,
+        "gemini generateContent"
+      );
+    } catch (e) {
+      const latency_ms = Date.now() - t0;
+      const error_message = e instanceof Error ? e.message : String(e);
+      await logLlmError(input.toolCtx, { model: MODEL, error_message, latency_ms });
+      throw e;
+    }
+    const latency_ms = Date.now() - t0;
 
     const usage = response.usageMetadata;
     if (usage) {
@@ -166,13 +179,34 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       .map((p) => p.functionCall)
       .filter((fc): fc is FunctionCall => !!fc);
 
+    // Serialize tool calls as name + arg keys only — no values (PII risk).
+    const toolCallsMeta = functionCalls.map((fc) => ({
+      name: fc.name ?? "",
+      args_keys: Object.keys((fc.args ?? {}) as Record<string, unknown>),
+    }));
+
+    const responseText = response.text ?? "";
+
+    // PRD §22 — v1 heuristic. Tighten post-pilot with token-overlap check.
+    const grounded =
+      toolCallsMeta.length === 0 || responseText.length <= 400;
+
+    await logLlmCall(input.toolCtx, {
+      model: MODEL,
+      prompt_sha: TONO_PROMPT_SHA,
+      prompt_tokens: usage?.promptTokenCount ?? undefined,
+      completion_tokens: usage?.candidatesTokenCount ?? undefined,
+      latency_ms,
+      tool_calls: toolCallsMeta,
+      grounded,
+    });
+
     if (functionCalls.length === 0) {
       // No more tool calls — return model text.
-      const text = response.text ?? "";
-      if (!text.trim()) {
+      if (!responseText.trim()) {
         log.warn("gemini returned empty text", { iter });
       }
-      return { reply: text.trim(), toolCallsMade, iterations: iter };
+      return { reply: responseText.trim(), toolCallsMade, iterations: iter };
     }
 
     // Execute every function call. Append the model's call + the responses to contents.
