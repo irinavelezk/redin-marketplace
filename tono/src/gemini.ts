@@ -22,6 +22,18 @@ import {
 import { TONO_SYSTEM_PROMPT } from "./prompts/tono-system";
 import { TONO_PROMPT_SHA } from "./prompt-sha";
 
+// ---------------------------------------------------------------------------
+// PRD §18 — ModelUnavailableError signals Gemini 5xx after one retry.
+// The agent layer catches this and calls escalate_to_hr.
+// ---------------------------------------------------------------------------
+
+export class ModelUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "ModelUnavailableError";
+  }
+}
+
 const log = createLogger("tono:gemini");
 
 const MODEL = "gemini-2.5-flash";
@@ -130,6 +142,53 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ]);
 }
 
+// PRD §18: detect Gemini 5xx / UNAVAILABLE errors.
+function isRetryableGeminiError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message.toLowerCase();
+  // HTTP status codes in the error message (GoogleGenAI surfaces these as strings).
+  if (/\b(500|502|503|504)\b/.test(e.message)) return true;
+  // gRPC / SDK status strings.
+  if (msg.includes("unavailable") || msg.includes("internal server error") || msg.includes("service unavailable")) return true;
+  return false;
+}
+
+// Fire-and-forget: log an llm_retry event so it's visible in eventos.
+async function logLlmRetry(ctx: ToolContext, model: string, attempt: number): Promise<void> {
+  try {
+    await ctx.supabase.from("eventos").insert({
+      type: "llm_retry",
+      entity_id: ctx.session_id ?? null,
+      actor: "agent" as const,
+      meta: { model, attempt },
+    });
+  } catch {
+    // Non-fatal — retry logging must never crash the conversation.
+  }
+}
+
+// PRD §18: one retry after 500ms on 5xx; throw ModelUnavailableError on second failure.
+async function generateContentWithRetry(
+  ai: GoogleGenAI,
+  params: Parameters<GoogleGenAI["models"]["generateContent"]>[0],
+  ctx: ToolContext,
+  timeoutMs: number
+): Promise<Awaited<ReturnType<GoogleGenAI["models"]["generateContent"]>>> {
+  try {
+    return await withTimeout(ai.models.generateContent(params), timeoutMs, "gemini generateContent");
+  } catch (firstErr) {
+    if (!isRetryableGeminiError(firstErr)) throw firstErr;
+    // Emit llm_retry event and wait 500ms before second attempt.
+    await logLlmRetry(ctx, MODEL, 1);
+    await new Promise((res) => setTimeout(res, 500));
+    try {
+      return await withTimeout(ai.models.generateContent(params), timeoutMs, "gemini generateContent retry");
+    } catch (secondErr) {
+      throw new ModelUnavailableError(secondErr);
+    }
+  }
+}
+
 export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   const ai = getClient();
   let contents = toGeminiContents(input.history, input.userMessage);
@@ -140,8 +199,9 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     const t0 = Date.now();
     let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
     try {
-      response = await withTimeout(
-        ai.models.generateContent({
+      response = await generateContentWithRetry(
+        ai,
+        {
           model: MODEL,
           contents,
           config: {
@@ -151,9 +211,9 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
             maxOutputTokens: 1024,
             thinkingConfig: { thinkingBudget: 0 },
           },
-        }),
-        TIMEOUT_MS,
-        "gemini generateContent"
+        },
+        input.toolCtx,
+        TIMEOUT_MS
       );
     } catch (e) {
       const latency_ms = Date.now() - t0;

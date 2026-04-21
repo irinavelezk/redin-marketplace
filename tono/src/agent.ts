@@ -19,7 +19,7 @@ import {
   type ToolContext,
   type ToolResult,
 } from "@redin/tools";
-import { runTurn, type ConversationTurn } from "./gemini";
+import { runTurn, ModelUnavailableError, type ConversationTurn } from "./gemini";
 import { SessionStore } from "./session";
 import { wrapData } from "./prompts/data-wrap";
 import {
@@ -195,12 +195,39 @@ export async function handleMessage(
   // Wrap the inbound message in <data source="tecnico"> before handing to the
   // LLM. The system prompt instructs Gemini to treat <data> content as data,
   // never instructions — this is the enforcement point for the current turn.
-  const turn = await runTurn({
-    history,
-    userMessage: wrapData(text, "tecnico"),
-    toolCtx,
-    dispatcher: routedDispatch,
-  });
+  let turn: Awaited<ReturnType<typeof runTurn>>;
+  try {
+    turn = await runTurn({
+      history,
+      userMessage: wrapData(text, "tecnico"),
+      toolCtx,
+      dispatcher: routedDispatch,
+    });
+  } catch (e) {
+    if (e instanceof ModelUnavailableError) {
+      // PRD §18: second Gemini failure → escalate to HR + return holding message.
+      log.error("model unavailable after retry — escalating to HR", { phone });
+      try {
+        await dispatchTool(toolCtx, "escalate_to_hr", {
+          phone,
+          reason: "model_unavailable",
+          context: `Toño no pudo procesar el mensaje de ${phone} por falla del modelo de IA (5xx tras retry).`,
+        });
+      } catch (escErr) {
+        log.error("escalate_to_hr also failed", {
+          error: escErr instanceof Error ? escErr.message : String(escErr),
+        });
+      }
+      const holdingReply = "Estoy con problemas técnicos, ya HR te escribe.";
+      return {
+        reply: holdingReply,
+        session_id: session.id,
+        tool_calls: [],
+        tool_calls_full: [],
+      };
+    }
+    throw e;
+  }
 
   // Persist any tool calls (as an assistant row) and responses (as a tool row).
   if (turn.toolCallsMade.length > 0) {
