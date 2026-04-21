@@ -50,15 +50,17 @@ async function seedTecnicoRegisteredBogotaElectrico(
   const supabase = createServerClient();
   const tecnico_id = `TEST_bogel01_${testPhone.slice(-6)}`;
 
-  await supabase.from("tecnicos_extended").upsert({
+  // tecnicos_extended columns: tecnico_id, phone, lider_phone, estado, onboarded_at, source, appsheet_synced_at
+  const { error: extErr } = await supabase.from("tecnicos_extended").upsert({
     tecnico_id,
     phone: testPhone,
-    ciudad: "Bogotá",
     estado: "activo",
     source: "warm",
   });
+  if (extErr) throw new Error(`fixture tecnicos_extended bogota_electrico: ${extErr.message}`);
 
-  await supabase.from("tecnicos_mirror").upsert({
+  // tecnicos_mirror columns: row_id, data, synced_at (no flat cols — all data in jsonb)
+  const { error: mirrorErr } = await supabase.from("tecnicos_mirror").upsert({
     row_id: tecnico_id,
     data: {
       "Row ID": tecnico_id,
@@ -68,11 +70,30 @@ async function seedTecnicoRegisteredBogotaElectrico(
       Ciudad: "Bogotá",
       Teléfono: testPhone,
     },
-    nombre: "Juan Rodriguez",
-    especialidad: "eléctrico",
-    ciudad: "Bogotá",
-    phone: testPhone,
   });
+  if (mirrorErr) throw new Error(`fixture tecnicos_mirror bogota_electrico: ${mirrorErr.message}`);
+
+  // Insert a tecnico_registered event so read_pending_ots(tecnico_id) can profile-match.
+  // Upsert via (type, entity_id) — events table has no unique constraint, so we
+  // delete the old one first to stay idempotent.
+  await supabase
+    .from("eventos")
+    .delete()
+    .eq("type", "tecnico_registered")
+    .eq("entity_id", tecnico_id);
+  const { error: evtErr } = await supabase.from("eventos").insert({
+    type: "tecnico_registered",
+    entity_id: tecnico_id,
+    actor: "agent",
+    meta: {
+      ciudad: "Bogotá",
+      especialidades: ["eléctrico"],
+      modalidad: "solo",
+      nombre: "Juan Rodriguez",
+      phone: testPhone,
+    },
+  });
+  if (evtErr) throw new Error(`fixture eventos bogota_electrico: ${evtErr.message}`);
 
   return { tecnico_id, ot_ids: [] };
 }
@@ -83,15 +104,15 @@ async function seedTecnicoRegisteredCaliPlomero(
   const supabase = createServerClient();
   const tecnico_id = `TEST_calpl01_${testPhone.slice(-6)}`;
 
-  await supabase.from("tecnicos_extended").upsert({
+  const { error: extErr } = await supabase.from("tecnicos_extended").upsert({
     tecnico_id,
     phone: testPhone,
-    ciudad: "Cali",
     estado: "activo",
     source: "warm",
   });
+  if (extErr) throw new Error(`fixture tecnicos_extended cali_plomero: ${extErr.message}`);
 
-  await supabase.from("tecnicos_mirror").upsert({
+  const { error: mirrorErr } = await supabase.from("tecnicos_mirror").upsert({
     row_id: tecnico_id,
     data: {
       "Row ID": tecnico_id,
@@ -101,11 +122,28 @@ async function seedTecnicoRegisteredCaliPlomero(
       Ciudad: "Cali",
       Teléfono: testPhone,
     },
-    nombre: "Carlos Mendez",
-    especialidad: "plomería",
-    ciudad: "Cali",
-    phone: testPhone,
   });
+  if (mirrorErr) throw new Error(`fixture tecnicos_mirror cali_plomero: ${mirrorErr.message}`);
+
+  // Insert tecnico_registered event for profile-matching in read_pending_ots.
+  await supabase
+    .from("eventos")
+    .delete()
+    .eq("type", "tecnico_registered")
+    .eq("entity_id", tecnico_id);
+  const { error: evtErr } = await supabase.from("eventos").insert({
+    type: "tecnico_registered",
+    entity_id: tecnico_id,
+    actor: "agent",
+    meta: {
+      ciudad: "Cali",
+      especialidades: ["plomería"],
+      modalidad: "solo",
+      nombre: "Carlos Mendez",
+      phone: testPhone,
+    },
+  });
+  if (evtErr) throw new Error(`fixture eventos cali_plomero: ${evtErr.message}`);
 
   return { tecnico_id, ot_ids: [] };
 }
@@ -118,7 +156,7 @@ async function seedTecnicoWithPendingPostulacion(
   const tecnico_id = refs.tecnico_id!;
   const ot_id = `TEST_OT_pending_${testPhone.slice(-6)}`;
 
-  await supabase.from("ots_mirror").upsert({
+  const { error: otErr } = await supabase.from("ots_mirror").upsert({
     row_id: ot_id,
     data: {
       "Row ID": ot_id,
@@ -131,13 +169,21 @@ async function seedTecnicoWithPendingPostulacion(
     especialidad: "eléctrico",
     estado: "pendiente",
   });
+  if (otErr) throw new Error(`fixture ots_mirror pending: ${otErr.message}`);
 
-  await supabase.from("postulaciones").insert({
+  // Idempotent: delete before insert to avoid duplicate (ot_id, tecnico_id) constraint.
+  await supabase
+    .from("postulaciones")
+    .delete()
+    .eq("ot_id", ot_id)
+    .eq("tecnico_id", tecnico_id);
+  const { error: postErr } = await supabase.from("postulaciones").insert({
     ot_id,
     tecnico_id,
     state: "postulado",
     mensaje: "TEST postulacion",
   });
+  if (postErr) throw new Error(`fixture postulaciones pending: ${postErr.message}`);
 
   return { tecnico_id, ot_ids: [ot_id] };
 }
@@ -150,7 +196,7 @@ async function seedTecnicoWithSignedContract(
   const tecnico_id = refs.tecnico_id!;
   const ot_id = `TEST_OT_signed_${testPhone.slice(-6)}`;
 
-  await supabase.from("ots_mirror").upsert({
+  const { error: otErr } = await supabase.from("ots_mirror").upsert({
     row_id: ot_id,
     data: {
       "Row ID": ot_id,
@@ -163,13 +209,21 @@ async function seedTecnicoWithSignedContract(
     especialidad: "eléctrico",
     estado: "asignado",
   });
+  if (otErr) throw new Error(`fixture ots_mirror signed: ${otErr.message}`);
 
-  await supabase.from("contratos").insert({
+  // Idempotent: delete before insert (contratos has no unique constraint on tecnico_id+ot_id).
+  await supabase
+    .from("contratos")
+    .delete()
+    .eq("tecnico_id", tecnico_id)
+    .eq("ot_id", ot_id);
+  const { error: ctrErr } = await supabase.from("contratos").insert({
     tecnico_id,
     ot_id,
     status: "firmado",
     created_by: "hr:test",
   });
+  if (ctrErr) throw new Error(`fixture contratos signed: ${ctrErr.message}`);
 
   return { tecnico_id, ot_ids: [ot_id] };
 }
