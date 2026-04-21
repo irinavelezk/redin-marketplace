@@ -8,7 +8,8 @@ db_fixtures:
 
 user_utterances:
   - "hola"
-  - "sí, me interesa ese trabajo eléctrico que me mandaste, me postulo"
+  - "¿qué trabajo de eléctrico hay en Bogotá?"
+  - "me postulo al primero"
 
 expected_tool_calls:
   - tool: identify_user
