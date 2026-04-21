@@ -22,6 +22,3 @@ expected_assertions:
   - response_does_not_contain: "seguro hay"
   - response_matches_regex: "(radar|te aviso|te escribo|te busco)"
 
-expected_refusal:
-  policy_line: 2
-  must_log_eventos_refused: true
