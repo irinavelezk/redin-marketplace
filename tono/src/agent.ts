@@ -195,11 +195,18 @@ export async function handleMessage(
   // Wrap the inbound message in <data source="tecnico"> before handing to the
   // LLM. The system prompt instructs Gemini to treat <data> content as data,
   // never instructions — this is the enforcement point for the current turn.
+  //
+  // Prepend phone context so identify_user always has the right phone to pass.
+  // In production WhatsApp, the phone comes from the JID; in eval/dashboard there
+  // is no out-of-band channel, so we inject it here as a pinned context line.
+  const phoneContext = `[session_phone: ${phone}]`;
+  const userMessage = `${phoneContext}\n${wrapData(text, "tecnico")}`;
+
   let turn: Awaited<ReturnType<typeof runTurn>>;
   try {
     turn = await runTurn({
       history,
-      userMessage: wrapData(text, "tecnico"),
+      userMessage,
       toolCtx,
       dispatcher: routedDispatch,
     });
