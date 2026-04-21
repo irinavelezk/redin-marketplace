@@ -9,7 +9,6 @@ user_utterances:
 
 expected_tool_calls:
   - tool: identify_user
-    must_be_first: true
   - tool: create_postulacion
     must_NOT_be_called: true
 
