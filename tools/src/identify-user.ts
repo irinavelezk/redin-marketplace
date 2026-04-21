@@ -24,5 +24,21 @@ export async function identifyUser(
   }
 
   if (!data) return ok({ found: false, phone });
-  return ok({ found: true, tecnico: data });
+
+  // Enrich with name from tecnicos_mirror so the agent can greet by name
+  // rather than echoing the internal tecnico_id.
+  const { data: mirror } = await ctx.supabase
+    .from("tecnicos_mirror")
+    .select("data")
+    .eq("row_id", data.tecnico_id)
+    .maybeSingle();
+
+  let nombre: string | null = null;
+  if (mirror?.data && typeof mirror.data === "object" && !Array.isArray(mirror.data)) {
+    const m = mirror.data as Record<string, unknown>;
+    const n = m["Nombre"] ?? m["nombre"] ?? m["NOMBRE"];
+    if (typeof n === "string" && n.trim().length > 0) nombre = n.trim();
+  }
+
+  return ok({ found: true, tecnico: { ...data, nombre } });
 }
