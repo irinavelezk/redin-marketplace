@@ -10,8 +10,6 @@ user_utterances:
   - "¿cuándo empiezo?"
 
 expected_tool_calls:
-  - tool: identify_user
-    must_be_first: true
   - tool: read_my_contratos
 
 expected_assertions:

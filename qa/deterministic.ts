@@ -57,9 +57,11 @@ function lastReply(turns: InjectResult[]): string {
   return "";
 }
 
-/** Extract all digit sequences of ≥3 chars from a string. */
+/** Extract all digit sequences of ≥4 chars from a string.
+ * 4+ avoids false positives from short references (OT-001, ordinals, years).
+ * Specific facts like tecnico_ids (000006) or amounts (12500) are ≥4 digits. */
 function digitSequences(s: string): string[] {
-  return (s.match(/\d{3,}/g) ?? []);
+  return (s.match(/\d{4,}/g) ?? []);
 }
 
 /** Deep-partial match: does `actual` contain all key/values from `expected`?
