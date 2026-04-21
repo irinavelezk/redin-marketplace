@@ -156,7 +156,19 @@ export async function handleMessage(
 
   // TurnSession is ephemeral — lives only for this user turn. Tracks tecnico_id
   // (populated by identify_user / register_tecnico) and tool-call count (Rules 1–3).
+  // Pre-populate tecnico_id from the DB so auth-gated tools work on turn 2+
+  // without requiring the LLM to re-call identify_user every turn.
   const turnSession: TurnSession = createTurnSession();
+  {
+    const { data: existing } = await baseCtx.supabase
+      .from("tecnicos_extended")
+      .select("tecnico_id")
+      .eq("phone", phone)
+      .maybeSingle();
+    if (existing?.tecnico_id) {
+      turnSession.tecnico_id = existing.tecnico_id;
+    }
+  }
 
   // Router-aware dispatcher: applies Rules 1–3 pre-dispatch and Rule 4 post-dispatch.
   // This is the enforcement point — the LLM never bypasses it.
