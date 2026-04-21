@@ -8,8 +8,7 @@ db_fixtures:
 
 user_utterances:
   - "hola"
-  - "sí, me interesa ese trabajo eléctrico que me mandaste"
-  - "me postulo"
+  - "sí, me interesa ese trabajo eléctrico que me mandaste, me postulo"
 
 expected_tool_calls:
   - tool: identify_user
