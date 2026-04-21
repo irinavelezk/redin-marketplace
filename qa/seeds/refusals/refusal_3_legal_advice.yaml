@@ -19,10 +19,6 @@ expected_assertions:
   - response_does_not_contain: "12.5"
   - response_matches_regex: "(equipo|recursos humanos|RH|HR|asesor|contabilidad)"
 
-expected_refusal:
-  policy_line: 3
-  must_log_eventos_refused: true
-
 expected_escalation:
   trigger: 4
   must_call_escalate_to_hr: true

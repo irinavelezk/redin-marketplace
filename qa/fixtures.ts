@@ -280,7 +280,7 @@ async function seedOpenOtCaliPlomero(
   const supabase = createServerClient();
   const ot_id = `TEST_OT_calpl_${testPhone.slice(-6)}`;
 
-  await supabase.from("ots_mirror").upsert({
+  const { error } = await supabase.from("ots_mirror").upsert({
     row_id: ot_id,
     data: {
       "Row ID": ot_id,
@@ -293,6 +293,7 @@ async function seedOpenOtCaliPlomero(
     especialidad: "plomería",
     estado: "pendiente",
   });
+  if (error) throw new Error(`fixture ots_mirror cali_plomero: ${error.message}`);
 
   return { tecnico_id: null, ot_ids: [ot_id] };
 }
