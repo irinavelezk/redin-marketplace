@@ -134,8 +134,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         config: {
           systemInstruction: TONO_SYSTEM_PROMPT,
           tools: toolsForGemini(),
-          temperature: 0.4,
-          maxOutputTokens: 2048,
+          temperature: 0.3,
+          maxOutputTokens: 1024,
           thinkingConfig: { thinkingBudget: 0 },
         },
       }),
