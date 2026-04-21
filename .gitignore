@@ -10,3 +10,5 @@ build/
 data/
 **/data/baileys_*
 tsconfig.tsbuildinfo
+qa/reports/*
+!qa/reports/.gitkeep
