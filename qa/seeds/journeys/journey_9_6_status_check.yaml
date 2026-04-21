@@ -17,5 +17,5 @@ expected_tool_calls:
 
 expected_assertions:
   - response_does_not_contain_cedula: true
-  - response_contains: "postulacion"
+  - response_matches_regex: "postulaci"
   - response_does_not_contain: "¡excelente"
