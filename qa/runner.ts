@@ -318,6 +318,13 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  // Pre-run cleanup: wipe any stale TEST_ / +99000 rows left by a prior crashed run.
+  // Without this, a prior run that exited without cleanup leaves sessions that
+  // getOrCreate() re-uses, then an in-flight cleanup from the prior run deletes them
+  // mid-turn causing FK violations on messages inserts.
+  console.log("[eval] Pre-run cleanup of stale test data...");
+  await cleanupTestData();
+
   let seeds = loadSeeds(only);
   if (limit !== null) {
     seeds = seeds.slice(0, limit);
