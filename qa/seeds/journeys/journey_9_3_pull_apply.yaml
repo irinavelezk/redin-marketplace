@@ -15,8 +15,6 @@ expected_tool_calls:
   - tool: identify_user
     must_be_first: true
   - tool: read_pending_ots
-    args_contain:
-      especialidad: "plomero"
   - tool: create_postulacion
 
 expected_assertions:

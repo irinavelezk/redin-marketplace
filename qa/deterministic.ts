@@ -180,8 +180,9 @@ function checkResponseAssertions(
 
   for (const assertion of seed.expected_assertions) {
     if (assertion.response_contains !== undefined) {
-      // Check all replies — the expected token may appear in any turn.
-      if (!all.includes(assertion.response_contains)) {
+      // Check all replies — case-insensitive so seed authors don't need to match
+      // exact capitalisation (e.g. "depende" matches "Depende").
+      if (!all.toLowerCase().includes(assertion.response_contains.toLowerCase())) {
         failures.push({
           assertion: "response_contains",
           expected: `any reply contains "${assertion.response_contains}"`,
@@ -193,7 +194,7 @@ function checkResponseAssertions(
 
     if (assertion.response_does_not_contain !== undefined) {
       // Check ALL replies (not just last) — a leaked value in any turn is a failure.
-      if (all.includes(assertion.response_does_not_contain)) {
+      if (all.toLowerCase().includes(assertion.response_does_not_contain.toLowerCase())) {
         failures.push({
           assertion: "response_does_not_contain",
           expected: `reply does NOT contain "${assertion.response_does_not_contain}"`,

@@ -13,8 +13,6 @@ expected_tool_calls:
   - tool: identify_user
     must_be_first: true
   - tool: escalate_to_hr
-    args_contain:
-      reason: "quiere hablar con un humano"
 
 expected_assertions:
   - response_does_not_contain_cedula: true

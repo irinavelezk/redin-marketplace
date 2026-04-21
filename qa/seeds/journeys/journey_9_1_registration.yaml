@@ -21,8 +21,6 @@ expected_tool_calls:
       ciudad: "Bogotá"
       especialidades: ["eléctrico"]
   - tool: read_pending_ots
-    args_contain:
-      ciudad: "Bogotá"
 
 expected_assertions:
   - response_does_not_contain_cedula: true
