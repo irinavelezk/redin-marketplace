@@ -15,6 +15,7 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import qrcode from "qrcode-terminal";
 import { createLogger, phoneFromJid } from "@redin/shared";
+import { INPUT_CAPS } from "@redin/tools/schemas";
 import pino from "pino";
 import path from "node:path";
 import fs from "node:fs";
@@ -132,7 +133,13 @@ export class WhatsAppClient {
     if (!text.trim()) return;
     const phone = phoneFromJid(jid);
     if (!phone) return;
-    await this.opts.handlers.onMessage({ phone, text, jid });
+    // PRD §20 cap — truncate before LLM assembly; log internally, no user-visible error.
+    let safeText = text;
+    if (text.length > INPUT_CAPS.whatsapp) {
+      log.warn("inbound message truncated", { phone, original_len: text.length, cap: INPUT_CAPS.whatsapp });
+      safeText = text.slice(0, INPUT_CAPS.whatsapp);
+    }
+    await this.opts.handlers.onMessage({ phone, text: safeText, jid });
   }
 }
 

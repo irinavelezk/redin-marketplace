@@ -4,6 +4,7 @@
 
 import type { ToolContext } from "./context";
 import { recordEvent } from "./events";
+import { INPUT_CAPS } from "./schemas";
 import type {
   CreatePostulacionInput,
   CreatePostulacionOutput,
@@ -17,6 +18,9 @@ export async function createPostulacion(
 ): Promise<ToolResult<CreatePostulacionOutput>> {
   if (!input.ot_id?.trim()) return err("ot_id required", { code: "invalid_input" });
   if (!input.tecnico_id?.trim()) return err("tecnico_id required", { code: "invalid_input" });
+  if (input.mensaje != null && input.mensaje.length > INPUT_CAPS.mensaje) {
+    return err(`mensaje exceeds ${INPUT_CAPS.mensaje} characters`, { code: "input_too_long" });
+  }
 
   // Confirm the OT exists in our mirror.
   const { data: ot, error: otErr } = await ctx.supabase

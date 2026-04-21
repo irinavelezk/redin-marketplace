@@ -6,6 +6,7 @@ import { normalizePhone, type Json } from "@redin/shared";
 import { randomUUID } from "node:crypto";
 import type { ToolContext } from "./context";
 import { recordEvent } from "./events";
+import { INPUT_CAPS } from "./schemas";
 import type {
   RegisterTecnicoInput,
   RegisterTecnicoOutput,
@@ -30,6 +31,9 @@ export async function registerTecnico(
   const phone = normalizePhone(input.phone);
   if (!phone) return err("phone is required", { code: "invalid_input" });
   if (!input.nombre?.trim()) return err("nombre is required", { code: "invalid_input" });
+  if (input.nombre.length > INPUT_CAPS.nombre) {
+    return err(`nombre exceeds ${INPUT_CAPS.nombre} characters`, { code: "input_too_long" });
+  }
   if (!input.ciudad?.trim()) return err("ciudad is required", { code: "invalid_input" });
   if (!Array.isArray(input.especialidades) || input.especialidades.length === 0) {
     return err("especialidades must be a non-empty array", { code: "invalid_input" });

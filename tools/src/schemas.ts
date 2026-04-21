@@ -2,6 +2,13 @@
 // Kept in sync with types.ts by hand — any change to tool I/O types must update this file.
 // `@google/genai` Type enum strings accepted at runtime: STRING, NUMBER, INTEGER, BOOLEAN, ARRAY, OBJECT.
 
+// PRD §20 input length caps — enforced at tool handler layer.
+export const INPUT_CAPS = {
+  nombre: 80,        // register_tecnico.nombre
+  mensaje: 500,      // create_postulacion.mensaje
+  whatsapp: 2000,    // inbound WA text before LLM assembly
+} as const;
+
 export const TOOL_DECLARATIONS = [
   {
     name: "identify_user",
