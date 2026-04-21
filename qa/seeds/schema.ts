@@ -72,6 +72,7 @@ export const DB_FIXTURE = z.enum([
   "tecnico_with_signed_contract",
   "open_ot_bogota_electrico",
   "open_ot_neiva_plomero",
+  "open_ot_cali_plomero",
   "multiple_open_ots_bogota", // triggers truncation (≥20 rows)
 ]);
 

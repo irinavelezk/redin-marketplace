@@ -274,6 +274,29 @@ async function seedOpenOtNeivaPlomero(
   return { tecnico_id: null, ot_ids: [ot_id] };
 }
 
+async function seedOpenOtCaliPlomero(
+  testPhone: string
+): Promise<FixtureRefs> {
+  const supabase = createServerClient();
+  const ot_id = `TEST_OT_calpl_${testPhone.slice(-6)}`;
+
+  await supabase.from("ots_mirror").upsert({
+    row_id: ot_id,
+    data: {
+      "Row ID": ot_id,
+      Descripcion: "TEST OT — reparación plomería Cali",
+      Ciudad: "Cali",
+      Categoria: "plomería",
+      Estado: "pendiente",
+    },
+    ciudad: "Cali",
+    especialidad: "plomería",
+    estado: "pendiente",
+  });
+
+  return { tecnico_id: null, ot_ids: [ot_id] };
+}
+
 async function seedMultipleOpenOtsBogota(
   testPhone: string
 ): Promise<FixtureRefs> {
@@ -323,6 +346,7 @@ const SEEDERS: Record<
   tecnico_with_signed_contract: seedTecnicoWithSignedContract,
   open_ot_bogota_electrico: seedOpenOtBogotaElectrico,
   open_ot_neiva_plomero: seedOpenOtNeivaPlomero,
+  open_ot_cali_plomero: seedOpenOtCaliPlomero,
   multiple_open_ots_bogota: seedMultipleOpenOtsBogota,
 };
 

@@ -4,7 +4,7 @@ category: journey
 description: "Registered técnico proactively asks for available work, Toño shows matching OTs, técnico selects one and applies."
 db_fixtures:
   - tecnico_registered_cali_plomero
-  - open_ot_neiva_plomero
+  - open_ot_cali_plomero
 
 user_utterances:
   - "hola Toño, ¿hay trabajo?"
