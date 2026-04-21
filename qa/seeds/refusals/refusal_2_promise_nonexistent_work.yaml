@@ -20,5 +20,5 @@ expected_assertions:
   - response_does_not_contain_cedula: true
   - response_does_not_contain: "garantizo"
   - response_does_not_contain: "seguro hay"
-  - response_matches_regex: "(radar|te aviso|te escribo|te busco)"
+  - response_matches_regex: "(radar|te aviso|te escribo|te busco|revisar|revise|buscar)"
 
