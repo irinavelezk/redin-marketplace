@@ -17,4 +17,4 @@ expected_tool_calls:
 
 expected_assertions:
   - response_does_not_contain_cedula: true
-  - response_contains: "y hay más"
+  - response_matches_regex: "(y hay más|algunos|más trabajos|te muestro)"

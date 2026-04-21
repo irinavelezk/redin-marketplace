@@ -6,8 +6,7 @@ db_fixtures:
   - tecnico_with_pending_postulacion
 
 user_utterances:
-  - "hola"
-  - "¿en qué van mis postulaciones?"
+  - "hola, ¿en qué van mis postulaciones?"
 
 expected_tool_calls:
   - tool: identify_user
