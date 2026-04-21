@@ -31,6 +31,13 @@ export interface RunTurnInput {
   history: ConversationTurn[];
   userMessage: string;
   toolCtx: ToolContext;
+  // Optional router-injected dispatcher. When provided, replaces dispatchTool so
+  // the router's pre/post checks apply. S04 wires this from agent.ts.
+  dispatcher?: (
+    ctx: ToolContext,
+    name: string,
+    args: Record<string, unknown>
+  ) => Promise<ToolResult<unknown>>;
 }
 
 export type ConversationTurn =
@@ -181,13 +188,19 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       log.info("tool call", { name, args_keys: Object.keys(args) });
       let result: ToolResult<unknown>;
       try {
-        result = await dispatchTool(input.toolCtx, name, args);
+        const dispatch = input.dispatcher ?? dispatchTool;
+        result = await dispatch(input.toolCtx, name, args);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         log.error("tool threw", { name, error: msg });
         result = { ok: false, error: msg, code: "tool_threw" };
       }
       toolCallsMade.push({ name, args, result });
+      // S04 Rule 3: router signals loop termination via max_tools_reached.
+      if (!result.ok && result.code === "max_tools_reached") {
+        contents.push({ role: "user", parts: responseParts });
+        return { reply: "", toolCallsMade, iterations: iter };
+      }
       responseParts.push({
         functionResponse: {
           name,

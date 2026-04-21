@@ -13,13 +13,22 @@ import {
 } from "@redin/shared";
 import type { SessionChannel } from "@redin/shared";
 import {
+  dispatchTool,
   makeDefaultToolContext,
   type Actor,
   type ToolContext,
+  type ToolResult,
 } from "@redin/tools";
 import { runTurn, type ConversationTurn } from "./gemini";
 import { SessionStore } from "./session";
 import { wrapData } from "./prompts/data-wrap";
+import {
+  createTurnSession,
+  preDispatch,
+  postDispatch,
+  applyToolResultToSession,
+  type TurnSession,
+} from "./router";
 
 const log = createLogger("tono:agent");
 
@@ -140,6 +149,44 @@ export async function handleMessage(
   const allButCurrent = recent.slice(0, -1);
   const history = toTurns(allButCurrent);
 
+  // TurnSession is ephemeral — lives only for this user turn. Tracks tecnico_id
+  // (populated by identify_user / register_tecnico) and tool-call count (Rules 1–3).
+  const turnSession: TurnSession = createTurnSession();
+
+  // Router-aware dispatcher: applies Rules 1–3 pre-dispatch and Rule 4 post-dispatch.
+  // This is the enforcement point — the LLM never bypasses it.
+  const routedDispatch = async (
+    ctx: ToolContext,
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<ToolResult<unknown>> => {
+    const decision = preDispatch(turnSession, name, args);
+
+    if (decision.kind === "refusal" || decision.kind === "terminal") {
+      log.warn("router blocked tool call", {
+        name,
+        code: decision.result.ok ? "" : decision.result.code,
+        kind: decision.kind,
+      });
+      return decision.result;
+    }
+
+    // decision.kind === "allow" — use mutated args (Rule 2 applied)
+    let result: ToolResult<unknown>;
+    try {
+      result = await dispatchTool(ctx, name, decision.args);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      result = { ok: false, error: msg, code: "tool_threw" };
+    }
+
+    // Update session from identify_user / register_tecnico outcomes.
+    applyToolResultToSession(turnSession, name, result);
+
+    // Rule 4: truncate large result sets.
+    return postDispatch(result);
+  };
+
   // Wrap the inbound message in <data source="tecnico"> before handing to the
   // LLM. The system prompt instructs Gemini to treat <data> content as data,
   // never instructions — this is the enforcement point for the current turn.
@@ -147,6 +194,7 @@ export async function handleMessage(
     history,
     userMessage: wrapData(text, "tecnico"),
     toolCtx,
+    dispatcher: routedDispatch,
   });
 
   // Persist any tool calls (as an assistant row) and responses (as a tool row).
