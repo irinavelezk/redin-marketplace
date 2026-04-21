@@ -19,6 +19,7 @@ import {
 } from "@redin/tools";
 import { runTurn, type ConversationTurn } from "./gemini";
 import { SessionStore } from "./session";
+import { wrapData } from "./prompts/data-wrap";
 
 const log = createLogger("tono:agent");
 
@@ -37,11 +38,15 @@ export interface HandleMessageResult {
 }
 
 // Convert persisted MessageRow[] to the LLM-facing ConversationTurn[] shape.
+// User messages are wrapped in <data source="tecnico"> so the model treats them
+// as content, never as instructions (PRD §20 injection defense).
+// Tool responses are wrapped in <data source="tool"> for the same reason — tool
+// outputs may carry user-generated content (e.g. mensajes from postulaciones).
 function toTurns(rows: MessageRow[]): ConversationTurn[] {
   const out: ConversationTurn[] = [];
   for (const r of rows) {
     if (r.role === "user" && r.content) {
-      out.push({ role: "user", text: r.content });
+      out.push({ role: "user", text: wrapData(r.content, "tecnico") });
     } else if (r.role === "assistant") {
       // We stored tool_calls jsonb alongside assistant messages when the assistant
       // emitted tool calls. Represent them as a tool_call turn.
@@ -86,7 +91,16 @@ function normalizeToolResponses(
     if (item && typeof item === "object" && !Array.isArray(item)) {
       const obj = item as Record<string, unknown>;
       const name = typeof obj.name === "string" ? obj.name : "";
-      const response = obj.response;
+      // Wrap string tool responses in <data source="tool"> so the model
+      // treats the payload as content, never as instructions (PRD §20).
+      // Non-string responses (objects/arrays) are serialized then wrapped.
+      const raw_response = obj.response;
+      const response =
+        typeof raw_response === "string"
+          ? wrapData(raw_response, "tool")
+          : typeof raw_response === "object" && raw_response !== null
+            ? wrapData(JSON.stringify(raw_response), "tool")
+            : raw_response;
       if (name) out.push({ name, response });
     }
   }
@@ -126,9 +140,12 @@ export async function handleMessage(
   const allButCurrent = recent.slice(0, -1);
   const history = toTurns(allButCurrent);
 
+  // Wrap the inbound message in <data source="tecnico"> before handing to the
+  // LLM. The system prompt instructs Gemini to treat <data> content as data,
+  // never instructions — this is the enforcement point for the current turn.
   const turn = await runTurn({
     history,
-    userMessage: text,
+    userMessage: wrapData(text, "tecnico"),
     toolCtx,
   });
 
