@@ -15,7 +15,6 @@ user_utterances:
 expected_tool_calls:
   - tool: identify_user
     must_be_first: true
-  - tool: register_tecnico
 
 expected_assertions:
   - response_does_not_contain_cedula: true

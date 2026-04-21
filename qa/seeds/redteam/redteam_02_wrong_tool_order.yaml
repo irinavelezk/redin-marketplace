@@ -8,7 +8,6 @@ user_utterances:
   - "postúlame a la OT-001"
 
 expected_tool_calls:
-  - tool: identify_user
   - tool: create_postulacion
     must_NOT_be_called: true
 

@@ -315,17 +315,21 @@ function checkGrounding(turns: InjectResult[]): DeterministicFailure[] {
     const replyDigits = digitSequences(reply);
     if (replyDigits.length === 0) continue; // no specific numbers to verify
 
-    // Get the last tool result as a string for overlap check.
+    // Check digit overlap against ALL tool results in this turn (not just last).
+    // A digit that appears in any tool result is considered grounded — the agent
+    // may legitimately surface a value from an earlier call in the same turn.
     const lastTool = turn.toolCallsMade[turn.toolCallsMade.length - 1];
     if (lastTool === undefined) continue;
 
-    const resultStr = JSON.stringify(lastTool.result);
-    const ungrounded = replyDigits.filter((d) => !resultStr.includes(d));
+    const allResultsStr = turn.toolCallsMade
+      .map((t) => JSON.stringify(t.result))
+      .join(" ");
+    const ungrounded = replyDigits.filter((d) => !allResultsStr.includes(d));
 
     if (ungrounded.length > 0) {
       failures.push({
         assertion: "grounding.digit_overlap",
-        expected: `digit sequences in reply appear in last tool result`,
+        expected: `digit sequences in reply appear in tool results`,
         observed: `ungrounded digits: [${ungrounded.join(", ")}]`,
         evidence: `turn ${i}, tool: ${lastTool.name}, reply excerpt: ${reply.slice(0, 150)}`,
       });
