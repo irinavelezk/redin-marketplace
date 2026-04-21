@@ -91,12 +91,15 @@ export async function readPendingOts(
 
   // Filter in application code — avoids PostgREST encoding issues with accented
   // characters (e.g. "Bogotá", "plomería") and terminal estado values with spaces.
-  const ciudadLower = ciudadFilter?.toLowerCase();
-  const especLower = especialidadFilter?.toLowerCase();
+  // normalize() strips accents so "plomeria" matches "plomería" and "Bogota" matches "Bogotá".
+  const normalize = (s: string) =>
+    s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  const ciudadNorm = ciudadFilter ? normalize(ciudadFilter) : null;
+  const especNorm = especialidadFilter ? normalize(especialidadFilter) : null;
   const ots = (rawOts ?? []).filter((o) => {
     if (TERMINAL_ESTADOS.includes(o.estado ?? "")) return false;
-    if (ciudadLower && !(o.ciudad ?? "").toLowerCase().includes(ciudadLower)) return false;
-    if (especLower && !(o.especialidad ?? "").toLowerCase().includes(especLower)) return false;
+    if (ciudadNorm && !normalize(o.ciudad ?? "").includes(ciudadNorm)) return false;
+    if (especNorm && !normalize(o.especialidad ?? "").includes(especNorm)) return false;
     return true;
   });
 
