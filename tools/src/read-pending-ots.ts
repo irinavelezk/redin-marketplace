@@ -38,7 +38,7 @@ export async function readPendingOts(
   ctx: ToolContext,
   input: ReadPendingOtsInput
 ): Promise<ToolResult<ReadPendingOtsOutput>> {
-  const limit = Math.min(Math.max(input.limit ?? 25, 1), 100);
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 100);
 
   let matchedByProfile = false;
   let ciudadFilter = input.ciudad?.trim();
