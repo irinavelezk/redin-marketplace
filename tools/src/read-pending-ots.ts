@@ -88,16 +88,18 @@ export async function readPendingOts(
   if (ciudadFilter) q = q.ilike("ciudad", ciudadFilter);
   if (especialidadFilter) q = q.ilike("especialidad", `%${especialidadFilter}%`);
 
-  // Exclude terminal estados — Postgres textual `not in` via `.not('col', 'in', '(a,b,c)')`.
-  // Using `.not("estado", "in", "(...)")` is safe because TERMINAL_ESTADOS is a hard-coded list.
-  const notInList = `(${TERMINAL_ESTADOS.map((s) => `"${s}"`).join(",")})`;
-  q = q.or(`estado.is.null,estado.not.in.${notInList}`);
-
-  const { data: ots, error } = await q;
+  const { data: rawOts, error } = await q;
   if (error) {
     return err(`db error: ${error.message}`, { code: "db_error", retryable: true });
   }
-  if (!ots || ots.length === 0) {
+
+  // Filter out terminal estados in application code to avoid PostgREST syntax
+  // issues with quoted values containing spaces (e.g. "99. Perdida / Cancelada").
+  const ots = (rawOts ?? []).filter(
+    (o) => !o.estado || !TERMINAL_ESTADOS.includes(o.estado)
+  );
+
+  if (ots.length === 0) {
     return ok({ ots: [], matched_by_profile: matchedByProfile });
   }
 
