@@ -11,10 +11,12 @@ export async function logEvent(
   input: LogEventInput
 ): Promise<ToolResult<LogEventOutput>> {
   if (!input.type?.trim()) return err("type required", { code: "invalid_input" });
+  // log_event is always an agent observation — force actor to "agent" so that
+  // inject.ts (and any monitoring query filtering actor="agent") captures it.
   const { id } = await recordEvent(ctx, {
     type: input.type,
     entity_id: input.entity_id ?? null,
-    actor: input.actor ?? ctx.defaultActor,
+    actor: "agent",
     meta: input.meta ?? {},
   });
   return ok({ evento_id: id });
