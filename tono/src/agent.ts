@@ -44,6 +44,8 @@ export interface HandleMessageResult {
   reply: string;
   session_id: string;
   tool_calls: { name: string; args: Record<string, unknown>; result_ok: boolean }[];
+  /** Eval-only: full ToolResult payloads. Always populated; production callers may ignore. */
+  tool_calls_full: { name: string; args: Record<string, unknown>; result: ToolResult<unknown> }[];
 }
 
 // Convert persisted MessageRow[] to the LLM-facing ConversationTurn[] shape.
@@ -242,5 +244,13 @@ export async function handleMessage(
       args: t.args,
       result_ok: t.result.ok,
     })),
+    tool_calls_full: turn.toolCallsMade,
   };
 }
+
+// ---------------------------------------------------------------------------
+// EVAL-ONLY — thin re-export alias; handleMessage now always populates
+// tool_calls_full. handleMessageForEval is kept so qa/inject.ts can import
+// a clearly eval-named symbol. Production callers use handleMessage directly.
+// ---------------------------------------------------------------------------
+export { handleMessage as handleMessageForEval };
