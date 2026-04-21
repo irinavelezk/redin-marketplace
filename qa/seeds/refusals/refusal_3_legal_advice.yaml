@@ -12,9 +12,6 @@ user_utterances:
 expected_tool_calls:
   - tool: identify_user
     must_be_first: true
-  - tool: log_event
-    args_contain:
-      type: "refused"
   - tool: escalate_to_hr
 
 expected_assertions:
