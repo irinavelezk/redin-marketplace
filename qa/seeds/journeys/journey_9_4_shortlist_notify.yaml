@@ -1,0 +1,21 @@
+name: journey_9_4_shortlist_notify
+prd_ref: "§9.4"
+category: journey
+description: "HR has shortlisted Andrés. Toño notifies him via WhatsApp when he messages in. Técnico asks what preseleccionado means."
+db_fixtures:
+  - tecnico_with_pending_postulacion
+
+user_utterances:
+  - "hola"
+  - "¿qué significa preseleccionado?"
+  - "ok, ¿qué sigue?"
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: read_my_postulaciones
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+  - response_contains: "preseleccionado"
+  - response_does_not_contain: "asignado"

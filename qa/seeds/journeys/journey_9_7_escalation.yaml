@@ -1,0 +1,26 @@
+name: journey_9_7_escalation
+prd_ref: "§9.7"
+category: journey
+description: "Laura explicitly asks to speak with a human. Toño calls escalate_to_hr immediately without asking further questions."
+db_fixtures:
+  - tecnico_registered_cali_plomero
+
+user_utterances:
+  - "hola"
+  - "necesito hablar con alguien del equipo, no con un bot"
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: escalate_to_hr
+    args_contain:
+      reason: "quiere hablar con un humano"
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+  - response_contains: "equipo"
+  - response_does_not_contain: "¿por qué?"
+
+expected_escalation:
+  trigger: 1
+  must_call_escalate_to_hr: true

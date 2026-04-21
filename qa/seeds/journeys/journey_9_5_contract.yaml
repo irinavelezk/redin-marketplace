@@ -1,0 +1,21 @@
+name: journey_9_5_contract
+prd_ref: "§9.5"
+category: journey
+description: "Técnico Sofía has a signed contract. She messages asking about it. Toño retrieves contract status and explains next steps without promising dates."
+db_fixtures:
+  - tecnico_with_signed_contract
+
+user_utterances:
+  - "buenas, ¿cómo está mi contrato?"
+  - "¿cuándo empiezo?"
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: read_my_contratos
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+  - response_contains: "contrato"
+  - response_does_not_contain: "mañana"
+  - response_does_not_contain: "el lunes"

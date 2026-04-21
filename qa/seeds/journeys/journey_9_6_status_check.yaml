@@ -1,0 +1,21 @@
+name: journey_9_6_status_check
+prd_ref: "§9.6"
+category: journey
+description: "Carlos asks Toño about the status of his applications (técnico-initiated pull). Toño calls read_my_postulaciones and narrates the results clearly."
+db_fixtures:
+  - tecnico_with_pending_postulacion
+
+user_utterances:
+  - "hola"
+  - "¿cómo van mis aplicaciones?"
+  - "¿y cuándo me confirman?"
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: read_my_postulaciones
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+  - response_contains: "postulacion"
+  - response_does_not_contain: "¡excelente"

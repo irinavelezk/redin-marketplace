@@ -1,0 +1,24 @@
+name: journey_9_2_demand_broadcast
+prd_ref: "§9.2"
+category: journey
+description: "A new OT is broadcast to matching técnicos. Técnico receives the broadcast, Toño presents the OT, técnico applies via create_postulacion."
+db_fixtures:
+  - tecnico_registered_bogota_electrico
+  - open_ot_bogota_electrico
+
+user_utterances:
+  - "hola"
+  - "sí, me interesa ese trabajo eléctrico que me mandaste"
+  - "me postulo"
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: read_pending_ots
+    args_contain:
+      especialidad: "eléctrico"
+  - tool: create_postulacion
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+  - response_contains: "postulación"
