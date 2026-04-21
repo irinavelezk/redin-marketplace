@@ -1,0 +1,32 @@
+{
+  "name": "@redin/tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./identify-user": "./src/identify-user.ts",
+    "./register-tecnico": "./src/register-tecnico.ts",
+    "./read-pending-ots": "./src/read-pending-ots.ts",
+    "./create-postulacion": "./src/create-postulacion.ts",
+    "./read-my-postulaciones": "./src/read-my-postulaciones.ts",
+    "./read-my-contratos": "./src/read-my-contratos.ts",
+    "./upload-documento": "./src/upload-documento.ts",
+    "./escalate-to-hr": "./src/escalate-to-hr.ts",
+    "./log-event": "./src/log-event.ts",
+    "./schemas": "./src/schemas.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@redin/shared": "*",
+    "@supabase/supabase-js": "^2.46.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

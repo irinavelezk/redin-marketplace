@@ -1,0 +1,32 @@
+{
+  "name": "@redin/marketplace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "shared",
+    "tools",
+    "tono",
+    "sync",
+    "dashboard"
+  ],
+  "scripts": {
+    "dev": "concurrently -n tono,sync,dashboard -c green,yellow,cyan \"npm --workspace @redin/tono run dev\" \"npm --workspace @redin/sync run dev\" \"npm --workspace @redin/dashboard run dev\"",
+    "tono:dev": "npm --workspace @redin/tono run dev",
+    "tono:pair": "npm --workspace @redin/tono run pair",
+    "sync:dev": "npm --workspace @redin/sync run dev",
+    "sync:once": "npm --workspace @redin/sync run once",
+    "dashboard:dev": "npm --workspace @redin/dashboard run dev",
+    "smoke": "tsx --env-file=.env.local scripts/phase0-smoke.ts",
+    "gen:types": "tsx --env-file=.env.local scripts/gen-supabase-types.ts",
+    "typecheck": "npm --workspaces --if-present run typecheck",
+    "lint": "npm --workspaces --if-present run lint",
+    "migrate": "tsx --env-file=.env.local scripts/run-migration.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
