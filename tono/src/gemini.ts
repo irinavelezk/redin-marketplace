@@ -143,13 +143,17 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 // PRD §18: detect Gemini 5xx / UNAVAILABLE errors.
+// Timeout errors (our own withTimeout) are NOT retried — they surface as throws
+// from the model layer and should propagate normally.
 function isRetryableGeminiError(e: unknown): boolean {
   if (!(e instanceof Error)) return false;
+  // Our own timeout sentinel — not a server 5xx.
+  if (e.message.includes("timeout after")) return false;
   const msg = e.message.toLowerCase();
   // HTTP status codes in the error message (GoogleGenAI surfaces these as strings).
   if (/\b(500|502|503|504)\b/.test(e.message)) return true;
   // gRPC / SDK status strings.
-  if (msg.includes("unavailable") || msg.includes("internal server error") || msg.includes("service unavailable")) return true;
+  if (msg.includes("service unavailable") || msg.includes("internal server error")) return true;
   return false;
 }
 
