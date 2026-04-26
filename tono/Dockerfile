@@ -13,4 +13,4 @@ ENV NODE_ENV=production
 ENV TONO_DATA_DIR=/data
 
 WORKDIR /app/tono
-CMD ["npm", "run", "start"]
+CMD ["npx", "tsx", "src/runner.ts"]
