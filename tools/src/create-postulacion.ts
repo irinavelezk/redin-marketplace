@@ -16,16 +16,7 @@ export async function createPostulacion(
   ctx: ToolContext,
   input: CreatePostulacionInput
 ): Promise<ToolResult<CreatePostulacionOutput>> {
-  // The LLM sometimes passes the user's literal phrasing — e.g. "OT 268W9..." —
-  // because that's how OTs appear on the dashboard. Strip a leading "OT" prefix
-  // (with space, dash, underscore, or colon) and any surrounding quotes so the
-  // lookup hits the actual row_id.
-  const otId = (input.ot_id ?? "")
-    .trim()
-    .replace(/^['"`]|['"`]$/g, "")
-    .replace(/^ot[\s_\-:]+/i, "")
-    .trim();
-  if (!otId) return err("ot_id required", { code: "invalid_input" });
+  if (!input.ot_id?.trim()) return err("ot_id required", { code: "invalid_input" });
   if (!input.tecnico_id?.trim()) return err("tecnico_id required", { code: "invalid_input" });
   if (input.mensaje != null && input.mensaje.length > INPUT_CAPS.mensaje) {
     return err(`mensaje exceeds ${INPUT_CAPS.mensaje} characters`, { code: "input_too_long" });
@@ -35,7 +26,7 @@ export async function createPostulacion(
   const { data: ot, error: otErr } = await ctx.supabase
     .from("ots_mirror")
     .select("row_id,estado")
-    .eq("row_id", otId)
+    .eq("row_id", input.ot_id)
     .maybeSingle();
   if (otErr) {
     return err(`db error: ${otErr.message}`, { code: "db_error", retryable: true });
@@ -59,7 +50,7 @@ export async function createPostulacion(
   const { data: inserted, error: insertErr } = await ctx.supabase
     .from("postulaciones")
     .insert({
-      ot_id: otId,
+      ot_id: input.ot_id,
       tecnico_id: input.tecnico_id,
       mensaje: input.mensaje ?? null,
     })
@@ -71,7 +62,7 @@ export async function createPostulacion(
       const { data: existing } = await ctx.supabase
         .from("postulaciones")
         .select("id")
-        .eq("ot_id", otId)
+        .eq("ot_id", input.ot_id)
         .eq("tecnico_id", input.tecnico_id)
         .maybeSingle();
       if (existing) {
@@ -89,7 +80,7 @@ export async function createPostulacion(
     entity_id: inserted.id,
     actor: input.actor ?? ctx.defaultActor,
     meta: {
-      ot_id: otId,
+      ot_id: input.ot_id,
       tecnico_id: input.tecnico_id,
       mensaje: input.mensaje ?? null,
     },

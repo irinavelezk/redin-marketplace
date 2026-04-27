@@ -40,15 +40,16 @@ export async function readPendingOts(
 ): Promise<ToolResult<ReadPendingOtsOutput>> {
   const limit = Math.min(Math.max(input.limit ?? 100, 1), 100);
 
+  // tecnico_id is informational: it confirms the worker exists and lets the
+  // agent describe results as personalized via `matched_by_profile`. We do NOT
+  // auto-derive ciudad / especialidad from the worker's profile here — the
+  // agent has that profile from identify_user and is responsible for passing
+  // the filters it actually wants applied.
   let matchedByProfile = false;
-  let ciudadFilter = input.ciudad?.trim();
-  let especialidadFilter = input.especialidad?.trim();
-
-  // If a tecnico_id is provided, try to prefer OTs in their ciudad / especialidad.
   if (input.tecnico_id) {
     const { data: tec, error: tecErr } = await ctx.supabase
       .from("tecnicos_extended")
-      .select("*")
+      .select("tecnico_id")
       .eq("tecnico_id", input.tecnico_id)
       .maybeSingle();
     if (tecErr) {
@@ -57,27 +58,11 @@ export async function readPendingOts(
     if (!tec) {
       return err("tecnico_id not found", { code: "not_found" });
     }
-    // tecnicos_extended doesn't store ciudad/especialidades today — they live in eventos
-    // (registered meta) OR will come from tecnicos_mirror once synced. Read the latest
-    // `tecnico_registered` event meta for a profile hint.
-    const { data: regEvent } = await ctx.supabase
-      .from("eventos")
-      .select("meta")
-      .eq("type", "tecnico_registered")
-      .eq("entity_id", tec.tecnico_id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (regEvent?.meta && typeof regEvent.meta === "object" && !Array.isArray(regEvent.meta)) {
-      const m = regEvent.meta as Record<string, unknown>;
-      if (!ciudadFilter && typeof m.ciudad === "string") ciudadFilter = m.ciudad;
-      if (!especialidadFilter && Array.isArray(m.especialidades) && m.especialidades.length > 0) {
-        const first = m.especialidades[0];
-        if (typeof first === "string") especialidadFilter = first;
-      }
-      if (ciudadFilter || especialidadFilter) matchedByProfile = true;
-    }
+    matchedByProfile = true;
   }
+
+  const ciudadFilter = input.ciudad?.trim();
+  const especialidadFilter = input.especialidad?.trim();
 
   const { data: rawOts, error } = await ctx.supabase
     .from("ots_mirror")
@@ -89,34 +74,20 @@ export async function readPendingOts(
     return err(`db error: ${error.message}`, { code: "db_error", retryable: true });
   }
 
-  // Filter in application code — avoids PostgREST encoding issues with accented
-  // characters (e.g. "Bogotá", "plomería") and terminal estado values with spaces.
-  // normalize() strips accents so "plomeria" matches "plomería" and "Bogota" matches "Bogotá".
+  // Strict filter — exactly what the agent requested. Application-side because
+  // PostgREST struggles with accents in filter values (Bogotá, plomería) and
+  // multi-word terminal estados. normalize() strips accents so "plomeria"
+  // matches "plomería" and "Bogota" matches "Bogotá".
   const normalize = (s: string) =>
     s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const ciudadNorm = ciudadFilter ? normalize(ciudadFilter) : null;
   const especNorm = especialidadFilter ? normalize(especialidadFilter) : null;
-  const baseOts = (rawOts ?? []).filter(
-    (o) => !TERMINAL_ESTADOS.includes(o.estado ?? "")
-  );
-  const cityMatches = baseOts.filter(
-    (o) => !ciudadNorm || normalize(o.ciudad ?? "").includes(ciudadNorm)
-  );
-  // Strict pass: require especialidad match — but only when the OT actually
-  // has an especialidad set. AppSheet OTs frequently arrive with `especialidad: null`
-  // (uncategorized). Excluding those just because the worker has a specific skill
-  // hides legitimate jobs in the worker's city; show them and let the agent describe.
-  let ots = cityMatches.filter((o) => {
-    if (!especNorm) return true;
-    const otEspec = o.especialidad ?? "";
-    if (!otEspec) return true;
-    return normalize(otEspec).includes(especNorm);
+  const ots = (rawOts ?? []).filter((o) => {
+    if (TERMINAL_ESTADOS.includes(o.estado ?? "")) return false;
+    if (ciudadNorm && !normalize(o.ciudad ?? "").includes(ciudadNorm)) return false;
+    if (especNorm && !normalize(o.especialidad ?? "").includes(especNorm)) return false;
+    return true;
   });
-  // Fallback: if both filters together yield nothing but city alone returns results,
-  // relax to city-only so the worker doesn't see a misleading "no jobs for you".
-  if (ots.length === 0 && especNorm && cityMatches.length > 0) {
-    ots = cityMatches;
-  }
 
   if (ots.length === 0) {
     return ok({ ots: [], matched_by_profile: matchedByProfile });
