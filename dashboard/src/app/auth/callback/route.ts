@@ -1,10 +1,16 @@
 import { NextResponse } from "next/server";
 import { serverClientBoundToCookies } from "@/lib/supabase-server";
 
-// Handles BOTH PKCE code exchange (signInWithOtp from same browser) and
-// token_hash verification (admin-generated magic links, cross-browser flows).
+// IMPORTANT: do not derive the redirect base from request.url. Behind
+// Railway's proxy, Next.js reports the container's internal host
+// (https://localhost:8080) instead of the public domain. We pin to
+// NEXT_PUBLIC_SITE_URL so redirects always land on the public host.
+const SITE_URL =
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  "https://dashboard-mp-production.up.railway.app";
+
 export async function GET(request: Request) {
-  const { searchParams, origin } = new URL(request.url);
+  const { searchParams } = new URL(request.url);
   const code = searchParams.get("code");
   const tokenHash = searchParams.get("token_hash");
   const type = searchParams.get("type");
@@ -14,7 +20,7 @@ export async function GET(request: Request) {
 
   if (code) {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
-    if (!error) return NextResponse.redirect(`${origin}${next}`);
+    if (!error) return NextResponse.redirect(`${SITE_URL}${next}`);
   }
 
   if (tokenHash && type) {
@@ -23,10 +29,10 @@ export async function GET(request: Request) {
       type: type as any,
       token_hash: tokenHash,
     });
-    if (!error) return NextResponse.redirect(`${origin}${next}`);
+    if (!error) return NextResponse.redirect(`${SITE_URL}${next}`);
   }
 
   return NextResponse.redirect(
-    `${origin}/login?error=${encodeURIComponent("invalid_or_expired_link")}`
+    `${SITE_URL}/login?error=${encodeURIComponent("invalid_or_expired_link")}`
   );
 }
