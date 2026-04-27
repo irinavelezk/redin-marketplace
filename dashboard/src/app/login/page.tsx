@@ -21,7 +21,7 @@ export default function LoginPage() {
       options: {
         emailRedirectTo:
           typeof window !== "undefined"
-            ? `${window.location.origin}/hr/pipeline`
+            ? `${window.location.origin}/auth/callback?next=/hr/pipeline`
             : undefined,
       },
     });
