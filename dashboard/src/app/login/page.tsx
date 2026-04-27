@@ -16,11 +16,12 @@ export default function LoginPage() {
     setStatus("sending");
     setErrMsg("");
     const supa = browserClient();
-    // Use the canonical site URL so the email link is stable regardless of
-    // what host the form was submitted from (localhost dev, preview, prod).
+    // Always send emails with the canonical production URL so a stale local
+    // dev server cannot hijack the redirect target. NEXT_PUBLIC_SITE_URL is
+    // set by Railway; the literal fallback covers `npm run dev` without env.
     const siteUrl =
       process.env.NEXT_PUBLIC_SITE_URL ||
-      (typeof window !== "undefined" ? window.location.origin : "");
+      "https://dashboard-mp-production.up.railway.app";
     const { error } = await supa.auth.signInWithOtp({
       email,
       options: {
