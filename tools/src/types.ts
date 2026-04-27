@@ -34,8 +34,17 @@ export function err(error: string, opts?: { code?: string; retryable?: boolean }
 export interface IdentifyUserInput {
   phone: string;
 }
+// nombre / ciudad / especialidades / modalidad are enriched from the latest
+// `tecnico_registered` event (or `tecnicos_mirror` for AppSheet-source rows).
+// They live on the row object so the agent treats them as authoritative profile.
+export type IdentifyUserTecnico = TecnicoExtendedRow & {
+  nombre: string | null;
+  ciudad: string | null;
+  especialidades: string[] | null;
+  modalidad: string | null;
+};
 export type IdentifyUserOutput =
-  | { found: true; tecnico: TecnicoExtendedRow }
+  | { found: true; tecnico: IdentifyUserTecnico }
   | { found: false; phone: string };
 
 // ---------- register_tecnico ----------

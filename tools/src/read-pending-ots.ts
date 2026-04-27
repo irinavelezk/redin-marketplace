@@ -96,12 +96,27 @@ export async function readPendingOts(
     s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const ciudadNorm = ciudadFilter ? normalize(ciudadFilter) : null;
   const especNorm = especialidadFilter ? normalize(especialidadFilter) : null;
-  const ots = (rawOts ?? []).filter((o) => {
-    if (TERMINAL_ESTADOS.includes(o.estado ?? "")) return false;
-    if (ciudadNorm && !normalize(o.ciudad ?? "").includes(ciudadNorm)) return false;
-    if (especNorm && !normalize(o.especialidad ?? "").includes(especNorm)) return false;
-    return true;
+  const baseOts = (rawOts ?? []).filter(
+    (o) => !TERMINAL_ESTADOS.includes(o.estado ?? "")
+  );
+  const cityMatches = baseOts.filter(
+    (o) => !ciudadNorm || normalize(o.ciudad ?? "").includes(ciudadNorm)
+  );
+  // Strict pass: require especialidad match — but only when the OT actually
+  // has an especialidad set. AppSheet OTs frequently arrive with `especialidad: null`
+  // (uncategorized). Excluding those just because the worker has a specific skill
+  // hides legitimate jobs in the worker's city; show them and let the agent describe.
+  let ots = cityMatches.filter((o) => {
+    if (!especNorm) return true;
+    const otEspec = o.especialidad ?? "";
+    if (!otEspec) return true;
+    return normalize(otEspec).includes(especNorm);
   });
+  // Fallback: if both filters together yield nothing but city alone returns results,
+  // relax to city-only so the worker doesn't see a misleading "no jobs for you".
+  if (ots.length === 0 && especNorm && cityMatches.length > 0) {
+    ots = cityMatches;
+  }
 
   if (ots.length === 0) {
     return ok({ ots: [], matched_by_profile: matchedByProfile });
