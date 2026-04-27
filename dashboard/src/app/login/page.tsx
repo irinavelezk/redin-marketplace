@@ -16,21 +16,37 @@ export default function LoginPage() {
     setStatus("sending");
     setErrMsg("");
     const supa = browserClient();
+    // Use the canonical site URL so the email link is stable regardless of
+    // what host the form was submitted from (localhost dev, preview, prod).
+    const siteUrl =
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      (typeof window !== "undefined" ? window.location.origin : "");
     const { error } = await supa.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo:
-          typeof window !== "undefined"
-            ? `${window.location.origin}/auth/callback?next=/hr/pipeline`
-            : undefined,
+        emailRedirectTo: `${siteUrl}/auth/callback?next=/hr/pipeline`,
       },
     });
     if (error) {
-      setErrMsg(error.message);
+      setErrMsg(translateAuthError(error.message));
       setStatus("error");
       return;
     }
     setStatus("sent");
+  }
+
+  function translateAuthError(msg: string): string {
+    const m = msg.toLowerCase();
+    if (m.includes("rate limit")) {
+      return "Demasiados intentos. Espera unos minutos y vuelve a intentar.";
+    }
+    if (m.includes("invalid email") || m.includes("email address")) {
+      return "Ese correo no parece válido. Revisa y vuelve a intentar.";
+    }
+    if (m.includes("expired")) {
+      return "El enlace expiró. Pide uno nuevo.";
+    }
+    return msg;
   }
 
   return (
