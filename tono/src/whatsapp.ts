@@ -8,6 +8,7 @@
 import { Boom } from "@hapi/boom";
 import makeWASocket, {
   DisconnectReason,
+  fetchLatestBaileysVersion,
   useMultiFileAuthState,
   type WASocket,
   type ConnectionState,
@@ -46,7 +47,13 @@ export class WhatsAppClient {
     const { state, saveCreds } = await useMultiFileAuthState(this.opts.authDir);
     // Silence Baileys' internal logger — we have our own structured logger.
     const silentLogger = pino({ level: "silent" });
+    // Pull the live WA web version so the handshake is not rejected (HTTP 405)
+    // when the version Baileys ships with falls behind WhatsApp's current range.
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({
+      version: undefined as unknown as [number, number, number],
+    }));
     this.sock = makeWASocket({
+      version,
       auth: state,
       printQRInTerminal: false, // we handle QR ourselves
       logger: silentLogger as unknown as pino.Logger,
