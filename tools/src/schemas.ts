@@ -1,6 +1,8 @@
-// Gemini function-calling declarations for Toño's 9 tools.
+// Function-calling declarations for Toño's 9 tools.
 // Kept in sync with types.ts by hand — any change to tool I/O types must update this file.
-// `@google/genai` Type enum strings accepted at runtime: STRING, NUMBER, INTEGER, BOOLEAN, ARRAY, OBJECT.
+// Type names are UPPERCASE (legacy from Gemini integration); tono/src/llm.ts lowercases
+// them when converting to Anthropic input_schema. New entries should keep the uppercase
+// convention until the file is migrated to plain JSON Schema.
 
 // PRD §20 input length caps — enforced at tool handler layer.
 export const INPUT_CAPS = {

@@ -19,7 +19,7 @@ async function main() {
   // Fail-fast env validation so we don't pair, take a user message, then crash.
   requireEnv("SUPABASE_URL");
   requireEnv("SUPABASE_SECRET_KEY");
-  requireEnv("GEMINI_API_KEY");
+  requireEnv("ANTHROPIC_API_KEY");
 
   const supabase = createServerClient();
   const escalationSink = TelegramEscalationSink.fromEnv();

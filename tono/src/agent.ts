@@ -19,7 +19,7 @@ import {
   type ToolContext,
   type ToolResult,
 } from "@redin/tools";
-import { runTurn, ModelUnavailableError, type ConversationTurn } from "./gemini";
+import { runTurn, ModelUnavailableError, type ConversationTurn } from "./llm";
 import { SessionStore } from "./session";
 import { wrapData } from "./prompts/data-wrap";
 import {

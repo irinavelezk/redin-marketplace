@@ -1,5 +1,5 @@
 // Computes SHA256 of tono-system.ts file contents once at module load and caches
-// it. Used by gemini.ts to stamp every llm_call evento with a prompt version.
+// it. Used by llm.ts to stamp every llm_call evento with a prompt version.
 // PRD §22: "SHA256 of tono-system.ts file contents, computed once at startup".
 
 import { createHash } from "node:crypto";

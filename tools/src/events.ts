@@ -1,7 +1,7 @@
 // Single helper every tool uses to write to `eventos`.
 // If this fails, the tool must fail visibly — HITL measurement depends on this log.
 //
-// logLlmCall / logLlmError are fire-and-forget wrappers for gemini.ts observability.
+// logLlmCall / logLlmError are fire-and-forget wrappers for llm.ts observability.
 // They must NEVER throw — a failed DB write cannot crash the conversation.
 
 import type { Json } from "@redin/shared";

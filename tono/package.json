@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^1.50.1",
+    "@anthropic-ai/sdk": "^0.41.0",
     "@hapi/boom": "^10.0.1",
     "@redin/shared": "*",
     "@redin/tools": "*",
