@@ -156,19 +156,19 @@ export default async function HrShortlistPage({ params }: Props) {
     .order("applied_at", { ascending: false });
 
   const tecnicoIds = [...new Set((posts ?? []).map((p) => p.tecnico_id))];
-  const { data: ratings } = tecnicoIds.length
-    ? await supa.from("ratings").select("ratee, stars").in("ratee", tecnicoIds)
+  const { data: perfRows } = tecnicoIds.length
+    ? await supa
+        .from("tecnico_performance")
+        .select("tecnico_id, avg_score, eval_count")
+        .in("tecnico_id", tecnicoIds)
     : { data: [] };
   const ratingByTec = new Map<string, number | null>();
-  const rcount = new Map<string, number>();
-  const rsum = new Map<string, number>();
-  for (const r of ratings ?? []) {
-    rcount.set(r.ratee, (rcount.get(r.ratee) ?? 0) + 1);
-    rsum.set(r.ratee, (rsum.get(r.ratee) ?? 0) + (r.stars ?? 0));
-  }
-  for (const id of tecnicoIds) {
-    const c = rcount.get(id);
-    ratingByTec.set(id, c ? (rsum.get(id) ?? 0) / c : null);
+  for (const id of tecnicoIds) ratingByTec.set(id, null);
+  for (const r of perfRows ?? []) {
+    ratingByTec.set(
+      r.tecnico_id,
+      r.eval_count > 0 && r.avg_score !== null ? r.avg_score : null
+    );
   }
 
   const { data: openPosRows } = tecnicoIds.length

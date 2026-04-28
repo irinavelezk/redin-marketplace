@@ -3,7 +3,9 @@
 // v1 signals are thin. We score:
 //   - disponibilidad: fresher applied_at ranks higher (proxy for "still responsive");
 //                     penalize técnicos with 2+ open postulaciones already elsewhere
-//   - calidad:       rating average (ratings.stars) — null if no history
+//   - calidad:       internal performance avg_score (1-5) from the
+//                    tecnico_performance view (Jose + arquitectos rate via
+//                    /hr/evaluations). Null if the worker has no evaluations yet.
 //   - costo:         tecnico self-reported rate if present in tecnicos_extended meta;
 //                    otherwise neutral (no signal — all tied)
 //

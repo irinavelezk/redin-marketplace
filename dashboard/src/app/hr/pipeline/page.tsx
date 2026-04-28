@@ -31,23 +31,23 @@ export default async function HrPipelinePage() {
     ? await supa.from("postulaciones").select("*").in("ot_id", otIds)
     : { data: [] as PostulacionRow[] };
 
-  // Ratings + open-load maps for ranking.
+  // Internal performance (Jose + arquitectos via /hr/evaluations). Replaces
+  // the legacy customer-stars ratings — Phase 1 has no direct customer
+  // relationship, so calidad is scored from inside.
   const tecnicoIds = [...new Set((allPosts ?? []).map((p) => p.tecnico_id))];
-  const { data: ratings } = tecnicoIds.length
-    ? await supa.from("ratings").select("ratee, stars").in("ratee", tecnicoIds)
+  const { data: perfRows } = tecnicoIds.length
+    ? await supa
+        .from("tecnico_performance")
+        .select("tecnico_id, avg_score, eval_count")
+        .in("tecnico_id", tecnicoIds)
     : { data: [] };
-
   const ratingByTec = new Map<string, number | null>();
-  const rateCount = new Map<string, number>();
-  const rateSum = new Map<string, number>();
-  for (const r of ratings ?? []) {
-    rateCount.set(r.ratee, (rateCount.get(r.ratee) ?? 0) + 1);
-    rateSum.set(r.ratee, (rateSum.get(r.ratee) ?? 0) + (r.stars ?? 0));
-  }
-  for (const id of tecnicoIds) {
-    const c = rateCount.get(id);
-    if (!c) ratingByTec.set(id, null);
-    else ratingByTec.set(id, (rateSum.get(id) ?? 0) / c);
+  for (const id of tecnicoIds) ratingByTec.set(id, null);
+  for (const r of perfRows ?? []) {
+    ratingByTec.set(
+      r.tecnico_id,
+      r.eval_count > 0 && r.avg_score !== null ? r.avg_score : null
+    );
   }
 
   const { data: openPosRows } = tecnicoIds.length
