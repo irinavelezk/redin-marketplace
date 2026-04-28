@@ -64,9 +64,17 @@ export async function readPendingOts(
   const ciudadFilter = input.ciudad?.trim();
   const especialidadFilter = input.especialidad?.trim();
 
+  // Push the terminal-estado filter into the DB so limit=100 actually returns
+  // open work. AppSheet re-touches every row each sync, so synced_at is uniform
+  // across the table; without this filter the top-100 slice was dominated by
+  // Pagado / Facturado and active OTs got hidden behind them.
   const { data: rawOts, error } = await ctx.supabase
     .from("ots_mirror")
     .select("*")
+    .neq("estado", "Pagado")
+    .neq("estado", "Facturado")
+    .neq("estado", "Terminado")
+    .neq("estado", "99. Perdida / Cancelada")
     .order("synced_at", { ascending: false })
     .limit(limit);
 
@@ -74,10 +82,10 @@ export async function readPendingOts(
     return err(`db error: ${error.message}`, { code: "db_error", retryable: true });
   }
 
-  // Strict filter — exactly what the agent requested. Application-side because
-  // PostgREST struggles with accents in filter values (Bogotá, plomería) and
-  // multi-word terminal estados. normalize() strips accents so "plomeria"
-  // matches "plomería" and "Bogota" matches "Bogotá".
+  // Application-side filters for ciudad / especialidad — PostgREST struggles
+  // with accents (Bogotá, plomería) and we want substring/normalized match.
+  // TERMINAL guard stays as a redundant safety in case a new terminal value
+  // gets added before the DB list is updated.
   const normalize = (s: string) =>
     s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const ciudadNorm = ciudadFilter ? normalize(ciudadFilter) : null;
