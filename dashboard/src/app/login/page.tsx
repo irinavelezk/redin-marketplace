@@ -3,13 +3,41 @@
 
 "use client";
 
-import { useState } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { browserClient } from "@/lib/supabase-browser";
 
-export default function LoginPage() {
+const URL_ERROR_MESSAGES: Record<string, string> = {
+  invalid_or_expired_link:
+    "El enlace expiró o ya se usó. Pide uno nuevo abajo — los enlaces duran 24 horas y solo sirven una vez.",
+  otp_expired:
+    "El enlace expiró. Pide uno nuevo abajo.",
+  access_denied:
+    "El enlace ya no es válido. Pide uno nuevo abajo.",
+};
+
+function LoginInner() {
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState("");
   const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [errMsg, setErrMsg] = useState("");
+  const [urlError, setUrlError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Surface ?error=... (set by /auth/callback when verify fails) AND any
+    // Supabase-set hash error (#error_code=...) so the user knows why they
+    // landed back here. Without this the page silently shows a blank form.
+    const queryErr = searchParams.get("error");
+    let hashErr: string | null = null;
+    if (typeof window !== "undefined" && window.location.hash) {
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      hashErr = params.get("error_code") || params.get("error");
+    }
+    const code = queryErr || hashErr;
+    if (code) {
+      setUrlError(URL_ERROR_MESSAGES[code] ?? `Hubo un problema con el enlace (${code}).`);
+    }
+  }, [searchParams]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -56,6 +84,11 @@ export default function LoginPage() {
       <p className="text-sm text-slate-600">
         Te enviamos un enlace mágico a tu correo. Click y entras — sin contraseñas.
       </p>
+      {urlError && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          {urlError}
+        </div>
+      )}
       {status === "sent" ? (
         <div className="card p-4 text-slate-700 text-sm">
           Listo. Revisa tu correo y toca el enlace para entrar.
@@ -90,5 +123,16 @@ export default function LoginPage() {
         principalmente para el equipo de HR.
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  // useSearchParams must be inside a Suspense boundary in the App Router
+  // when used in a "use client" page; wrapping here keeps the component tree
+  // simple and lets Next.js statically prerender the shell.
+  return (
+    <Suspense fallback={null}>
+      <LoginInner />
+    </Suspense>
   );
 }
