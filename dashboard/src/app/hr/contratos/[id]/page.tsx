@@ -2,6 +2,7 @@
 // Server actions + simple signed URL from Supabase Storage.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
+import { enqueueWhatsApp, tecnicoNotificationContext } from "@/lib/notify";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
@@ -29,6 +30,28 @@ async function markSent(formData: FormData) {
     actor: `hr:${hrEmail}`,
     meta: {},
   });
+
+  const { data: contract } = await supa
+    .from("contratos")
+    .select("ot_id, tecnico_id")
+    .eq("id", contractId)
+    .maybeSingle();
+  if (contract?.tecnico_id) {
+    const { phone, descripcion } = await tecnicoNotificationContext(
+      supa,
+      contract.tecnico_id,
+      contract.ot_id
+    );
+    if (phone) {
+      const trabajo = descripcion ?? "el trabajo";
+      await enqueueWhatsApp(supa, {
+        phone,
+        body: `Te llegó el contrato de "${trabajo}". Revísalo y firma cuando puedas — cualquier duda me dices.`,
+        meta: { kind: "contract_sent", contract_id: contractId },
+      });
+    }
+  }
+
   revalidatePath(`/hr/contratos/${contractId}`);
 }
 
@@ -80,6 +103,20 @@ async function markSigned(formData: FormData) {
       })
       .eq("ot_id", contract.ot_id)
       .eq("tecnico_id", contract.tecnico_id);
+
+    const { phone, descripcion } = await tecnicoNotificationContext(
+      supa,
+      contract.tecnico_id,
+      contract.ot_id
+    );
+    if (phone) {
+      const trabajo = descripcion ?? "el trabajo";
+      await enqueueWhatsApp(supa, {
+        phone,
+        body: `Listo — quedaste asignado a "${trabajo}". ¡Manos a la obra! Cualquier cosa me dices.`,
+        meta: { kind: "asignado", contract_id: contractId, ot_id: contract.ot_id },
+      });
+    }
   }
 
   revalidatePath(`/hr/contratos/${contractId}`);

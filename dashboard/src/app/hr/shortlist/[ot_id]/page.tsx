@@ -3,6 +3,7 @@
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
+import { enqueueWhatsApp, tecnicoNotificationContext } from "@/lib/notify";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import type { PostulacionState } from "@redin/shared";
@@ -57,6 +58,29 @@ async function decide(formData: FormData) {
     },
   });
 
+  if (state === "preseleccionado") {
+    const { data: post } = await supa
+      .from("postulaciones")
+      .select("tecnico_id")
+      .eq("id", postulacionId)
+      .maybeSingle();
+    if (post?.tecnico_id) {
+      const { phone, descripcion } = await tecnicoNotificationContext(
+        supa,
+        post.tecnico_id,
+        otId
+      );
+      if (phone) {
+        const trabajo = descripcion ?? "el trabajo";
+        await enqueueWhatsApp(supa, {
+          phone,
+          body: `Buenas — quedaste preseleccionado para "${trabajo}". El cliente revisa tu perfil; te aviso apenas decidan.`,
+          meta: { kind: "preseleccionado", postulacion_id: postulacionId, ot_id: otId },
+        });
+      }
+    }
+  }
+
   revalidatePath(`/hr/shortlist/${encodeURIComponent(otId)}`);
   revalidatePath("/hr/pipeline");
 }
@@ -94,6 +118,16 @@ async function createContract(formData: FormData) {
     actor: `hr:${hrEmail}`,
     meta: { tecnico_id: tecnicoId, ot_id: otId },
   });
+
+  const { phone, descripcion } = await tecnicoNotificationContext(supa, tecnicoId, otId);
+  if (phone) {
+    const trabajo = descripcion ?? "el trabajo";
+    await enqueueWhatsApp(supa, {
+      phone,
+      body: `Avanzamos con el contrato de "${trabajo}". Te lo paso en un momento para que lo revises.`,
+      meta: { kind: "contract_drafted", contract_id: contract.id, ot_id: otId },
+    });
+  }
 
   redirect(`/hr/contratos/${encodeURIComponent(contract.id)}`);
 }
