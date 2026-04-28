@@ -96,6 +96,14 @@ export interface CreatePostulacionInput {
 export interface CreatePostulacionOutput {
   postulacion_id: string;
   state: "postulado" | "already_applied";
+  // Echoed back so the agent can summarize the OT for the worker without
+  // a separate read_pending_ots round-trip.
+  ot: {
+    ciudad: string | null;
+    especialidad: string | null;
+    descripcion: string;
+    estado: string | null;
+  };
 }
 
 // ---------- read_my_postulaciones ----------
