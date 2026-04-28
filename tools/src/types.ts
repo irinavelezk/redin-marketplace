@@ -163,6 +163,21 @@ export interface EscalateToHrOutput {
   delivered_to_telegram: boolean;
 }
 
+// ---------- set_qualification_state ----------
+// Agent-callable: only `needs_review` accepted. HR-only states (qualified /
+// rejected / needs_call) are rejected at the tool layer.
+export interface SetQualificationStateInput {
+  tecnico_id: string;
+  state: "needs_review";
+  summary: string;
+  actor?: Actor;
+}
+export interface SetQualificationStateOutput {
+  tecnico_id: string;
+  state: "needs_review" | "already_decided";
+  prior_state?: string;
+}
+
 // ---------- log_event ----------
 export interface LogEventInput {
   type: string;

@@ -151,6 +151,28 @@ export const TOOL_DECLARATIONS = [
     },
   },
   {
+    name: "set_qualification_state",
+    description:
+      "Marca este perfil como listo para que RRHH revise y apruebe. Llámalo cuando ya tengas suficiente contexto del técnico (especialidades reales, años de experiencia o referencias mencionadas, ciudades donde puede trabajar, herramientas, ARL/EPS si aplica). El técnico no puede postularse a OTs hasta que RRHH apruebe — no lo bloquees con preguntas innecesarias, pero asegúrate de tener un panorama útil. Idempotente. Estados qualified/rejected/needs_call son solo de RRHH y serán rechazados aquí.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        tecnico_id: { type: "STRING" },
+        state: {
+          type: "STRING",
+          enum: ["needs_review"],
+          description: "Único valor permitido para el agente.",
+        },
+        summary: {
+          type: "STRING",
+          description:
+            "2-3 frases resumiendo lo que aprendiste: experiencia, fortalezas, transporte, referencias, disponibilidad. RRHH lo lee.",
+        },
+      },
+      required: ["tecnico_id", "state", "summary"],
+    },
+  },
+  {
     name: "log_event",
     description:
       "Registra una observación del agente: frustración, duda, confirmación implícita. Usado para medición HITL — no es visible para el técnico.",

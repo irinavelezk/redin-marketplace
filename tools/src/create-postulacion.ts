@@ -51,10 +51,14 @@ export async function createPostulacion(
     estado: ot.estado,
   };
 
-  // Confirm the técnico exists.
+  // Confirm the técnico exists, is active, and has cleared HR qualification.
+  // The qualification gate is the marketplace's "approved-to-apply" boundary —
+  // see migrations/003_qualification.sql. Workers in `pending` / `needs_review`
+  // / `needs_call` see a friendly hold message via the prompt; `rejected` is
+  // also blocked here.
   const { data: tec, error: tecErr } = await ctx.supabase
     .from("tecnicos_extended")
-    .select("tecnico_id,estado")
+    .select("tecnico_id,estado,qualification_state")
     .eq("tecnico_id", input.tecnico_id)
     .maybeSingle();
   if (tecErr) {
@@ -63,6 +67,12 @@ export async function createPostulacion(
   if (!tec) return err("tecnico_id not found", { code: "not_found" });
   if (tec.estado !== "activo") {
     return err(`tecnico is ${tec.estado}, cannot apply`, { code: "tecnico_inactive" });
+  }
+  if (tec.qualification_state !== "qualified") {
+    return err(
+      `qualification state is ${tec.qualification_state}; cannot apply until HR approves`,
+      { code: "qualification_pending" }
+    );
   }
 
   const { data: inserted, error: insertErr } = await ctx.supabase

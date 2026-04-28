@@ -13,6 +13,17 @@ export type Json =
 // ---------- Enums / literal unions ----------
 
 export type TecnicoEstado = "activo" | "pausado" | "baneado";
+export type QualificationState =
+  | "pending"
+  | "needs_review"
+  | "needs_call"
+  | "qualified"
+  | "rejected";
+export type QualificationCallOutcome =
+  | "approved"
+  | "rejected"
+  | "needs_more_info"
+  | "no_show";
 export type SessionChannel = "whatsapp" | "dashboard";
 export type MessageRole = "user" | "assistant" | "tool";
 export type PostulacionState =
@@ -65,6 +76,43 @@ export type TecnicoExtendedRow = {
   onboarded_at: string;
   source: string | null;
   appsheet_synced_at: string | null;
+  qualification_state: QualificationState;
+};
+
+export type QualificationCallRow = {
+  id: string;
+  tecnico_id: string;
+  scheduled_for: string | null;
+  completed_at: string | null;
+  outcome: QualificationCallOutcome | null;
+  notes: string | null;
+  hr_user: string | null;
+  created_at: string;
+};
+
+export type TecnicoEvaluationRow = {
+  id: string;
+  tecnico_id: string;
+  ot_id: string;
+  evaluator: string;
+  cumplimiento: number | null;
+  calidad: number | null;
+  actitud: number | null;
+  puntualidad: number | null;
+  recommend_rehire: boolean | null;
+  notes: string | null;
+  created_at: string;
+};
+
+// Aggregated view from migrations/003_qualification.sql.
+export type TecnicoPerformanceRow = {
+  tecnico_id: string;
+  eval_count: number;
+  avg_score: number | null;
+  rehire_yes: number;
+  rehire_no: number;
+  jobs_completed: number;
+  jobs_dropped: number;
 };
 
 export type SessionRow = {
@@ -196,12 +244,36 @@ export interface Database {
       tecnicos_extended: Table<
         TecnicoExtendedRow,
         OptionalNulls<
-          Omit<TecnicoExtendedRow, "onboarded_at" | "estado"> & {
+          Omit<
+            TecnicoExtendedRow,
+            "onboarded_at" | "estado" | "qualification_state"
+          > & {
             onboarded_at?: string;
             estado?: TecnicoEstado;
+            qualification_state?: QualificationState;
           }
         >,
         Partial<TecnicoExtendedRow>
+      >;
+      qualification_calls: Table<
+        QualificationCallRow,
+        OptionalNulls<
+          Omit<QualificationCallRow, "id" | "created_at"> & {
+            id?: string;
+            created_at?: string;
+          }
+        >,
+        Partial<QualificationCallRow>
+      >;
+      tecnico_evaluations: Table<
+        TecnicoEvaluationRow,
+        OptionalNulls<
+          Omit<TecnicoEvaluationRow, "id" | "created_at"> & {
+            id?: string;
+            created_at?: string;
+          }
+        >,
+        Partial<TecnicoEvaluationRow>
       >;
       sessions: Table<
         SessionRow,
@@ -312,7 +384,12 @@ export interface Database {
         Partial<ActividadMirrorRow>
       >;
     };
-    Views: Record<never, never>;
+    Views: {
+      tecnico_performance: {
+        Row: TecnicoPerformanceRow;
+        Relationships: NoRelationships;
+      };
+    };
     Functions: Record<never, never>;
     Enums: Record<never, never>;
     CompositeTypes: Record<never, never>;

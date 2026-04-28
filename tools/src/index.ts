@@ -14,6 +14,7 @@ export { readMyContratos } from "./read-my-contratos";
 export { uploadDocumento } from "./upload-documento";
 export { escalateToHr } from "./escalate-to-hr";
 export { logEvent } from "./log-event";
+export { setQualificationState } from "./set-qualification-state";
 
 // Centralized dispatcher — used by Toño and by the dashboard chat API route.
 import type { ToolContext } from "./context";
@@ -26,6 +27,7 @@ import { readMyContratos } from "./read-my-contratos";
 import { uploadDocumento } from "./upload-documento";
 import { escalateToHr } from "./escalate-to-hr";
 import { logEvent } from "./log-event";
+import { setQualificationState } from "./set-qualification-state";
 import type { ToolName } from "./schemas";
 import type { ToolResult } from "./types";
 
@@ -66,6 +68,9 @@ export async function dispatchTool(
     case "log_event":
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return logEvent(ctx, args as any);
+    case "set_qualification_state":
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return setQualificationState(ctx, args as any);
     default:
       return {
         ok: false,
