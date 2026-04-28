@@ -36,11 +36,19 @@ function descripcionFrom(data: unknown): string {
 
 export default async function Home() {
   const supa = serviceClient();
+  // Filter terminal estados at the DB so the public board surfaces all open
+  // work, not just whatever happened to be at the top of the latest 30 syncs.
+  // (AppSheet sync re-touches all rows; Pagado dominates the recent activity
+  // and used to drown out the active ones.)
   const { data, error } = await supa
     .from("ots_mirror")
     .select("row_id, ciudad, especialidad, estado, data")
+    .neq("estado", "Pagado")
+    .neq("estado", "Facturado")
+    .neq("estado", "Terminado")
+    .neq("estado", "99. Perdida / Cancelada")
     .order("synced_at", { ascending: false })
-    .limit(30);
+    .limit(100);
 
   const pending: OtRow[] = (data ?? []).filter(
     (o) => !o.estado || !TERMINAL_ESTADOS.has(o.estado)
