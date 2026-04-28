@@ -10,6 +10,7 @@ import {
 import { makeDefaultToolContext } from "@redin/tools";
 import { handleMessage } from "./agent";
 import { KeyedMutex } from "./mutex";
+import { startOutboundDrainer } from "./outbound";
 import { TelegramEscalationSink } from "./telegram-escalation";
 import { WhatsAppClient, defaultAuthDir } from "./whatsapp";
 
@@ -25,11 +26,14 @@ async function main() {
   const escalationSink = TelegramEscalationSink.fromEnv();
   const mutex = new KeyedMutex();
 
+  let waReady = false;
+
   const wa = new WhatsAppClient({
     authDir: defaultAuthDir(),
     printQr: true,
     handlers: {
       onReady: () => {
+        waReady = true;
         log.info("Toño is online", {
           number_env: process.env.WA_NUMBER ?? "(unset)",
         });
@@ -81,8 +85,9 @@ async function main() {
     mutex_size_live: mutex.size(),
   });
 
-  // Helper for manually sending a test DM (used by pair.ts and scripts).
-  // Exposed via SIGUSR2 as a no-op; kept here for future.
+  // Drain HR-triggered worker notifications enqueued by dashboard-mp.
+  startOutboundDrainer({ supabase, wa, isReady: () => waReady });
+
   // Keep the process alive:
   setInterval(() => {
     /* heartbeat */
