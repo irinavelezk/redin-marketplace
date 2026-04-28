@@ -71,7 +71,15 @@ export default async function HrPipelinePage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold text-slate-900">Pipeline HR</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-xl font-semibold text-slate-900">Pipeline HR</h1>
+        <Link
+          href="/hr/qualification-queue"
+          className="text-sm text-amber-600 hover:text-amber-700 font-medium"
+        >
+          Cola de calificación →
+        </Link>
+      </div>
       <p className="text-sm text-slate-600">
         OTs abiertas con postulaciones. Orden: disponibilidad → calidad → costo.
       </p>
