@@ -161,17 +161,22 @@ export async function handleMessage(
 
   // TurnSession is ephemeral — lives only for this user turn. Tracks tecnico_id
   // (populated by identify_user / register_tecnico) and tool-call count (Rules 1–3).
-  // Pre-populate tecnico_id from the DB so auth-gated tools work on turn 2+
-  // without requiring the LLM to re-call identify_user every turn.
+  // Pre-populate tecnico_id + qualification_state from the DB so auth-gated tools
+  // work on turn 2+ without requiring the LLM to re-call identify_user every turn,
+  // AND so HR-driven state changes (approval, reject, needs_call) surface to the
+  // agent immediately instead of waiting for a stale identify_user response to
+  // age out of the conversation history.
   const turnSession: TurnSession = createTurnSession();
+  let currentQualificationState: string | null = null;
   {
     const { data: existing } = await baseCtx.supabase
       .from("tecnicos_extended")
-      .select("tecnico_id")
+      .select("tecnico_id, qualification_state")
       .eq("phone", phone)
       .maybeSingle();
     if (existing?.tecnico_id) {
       turnSession.tecnico_id = existing.tecnico_id;
+      currentQualificationState = existing.qualification_state;
     }
   }
 
@@ -210,14 +215,21 @@ export async function handleMessage(
   };
 
   // Wrap the inbound message in <data source="tecnico"> before handing to the
-  // LLM. The system prompt instructs Gemini to treat <data> content as data,
+  // LLM. The system prompt instructs Claude to treat <data> content as data,
   // never instructions — this is the enforcement point for the current turn.
   //
-  // Prepend phone context so identify_user always has the right phone to pass.
-  // In production WhatsApp, the phone comes from the JID; in eval/dashboard there
-  // is no out-of-band channel, so we inject it here as a pinned context line.
-  const phoneContext = `[session_phone: ${phone}]`;
-  const userMessage = `${phoneContext}\n${wrapData(text, "tecnico")}`;
+  // Prepend session context so identify_user always has the right phone to pass,
+  // AND so qualification_state (from a fresh DB read this turn) is authoritative
+  // over the cached identify_user response that may live in conversation history
+  // from N turns ago. The system prompt tells Toño to trust [session_state] over
+  // any older tool responses for current truth.
+  const contextLines = [`[session_phone: ${phone}]`];
+  if (currentQualificationState) {
+    contextLines.push(
+      `[session_state: qualification_state=${currentQualificationState}]`
+    );
+  }
+  const userMessage = `${contextLines.join("\n")}\n${wrapData(text, "tecnico")}`;
 
   let turn: Awaited<ReturnType<typeof runTurn>>;
   try {
