@@ -77,6 +77,7 @@ export type TecnicoExtendedRow = {
   source: string | null;
   appsheet_synced_at: string | null;
   qualification_state: QualificationState;
+  last_jid: string | null;
 };
 
 export type QualificationCallRow = {

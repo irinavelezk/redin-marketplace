@@ -44,7 +44,17 @@ export function startOutboundDrainer(opts: OutboundDrainerOpts): () => void {
         return;
       }
       for (const row of data ?? []) {
-        const jid = jidFromPhone(row.phone);
+        // Prefer the persisted inbound JID over a phone-rebuilt JID. The
+        // rebuilt one hardcodes "@s.whatsapp.net" and silently misses
+        // LID-mode accounts ("<digits>@lid"). See migration 004.
+        const { data: tec } = await supabase
+          .from("tecnicos_extended")
+          .select("last_jid")
+          .eq("phone", row.phone)
+          .maybeSingle();
+        const jid =
+          (tec as { last_jid: string | null } | null)?.last_jid ??
+          jidFromPhone(row.phone);
         if (!jid || !jid.includes("@")) {
           await markFailed(supabase, row.id, "invalid phone");
           continue;
@@ -52,7 +62,7 @@ export function startOutboundDrainer(opts: OutboundDrainerOpts): () => void {
         try {
           await wa.sendText(jid, row.body);
           await markSent(supabase, row.id);
-          log.info("sent", { id: row.id, phone: row.phone });
+          log.info("sent", { id: row.id, phone: row.phone, jid });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           await markRetry(supabase, row.id, (row.attempts ?? 0) + 1, msg);

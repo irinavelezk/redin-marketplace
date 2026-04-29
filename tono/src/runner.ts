@@ -51,6 +51,7 @@ async function main() {
               text,
               channel: "whatsapp",
               toolCtx,
+              jid,
             });
             log.info("handled", {
               phone,

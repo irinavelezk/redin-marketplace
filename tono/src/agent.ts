@@ -38,6 +38,11 @@ export interface HandleMessageInput {
   channel: SessionChannel;
   // Optional overrides for tests / dashboard API route.
   toolCtx?: ToolContext;
+  // Original Baileys JID — captured to support LID accounts. WhatsApp privacy
+  // mode produces "<digits>@lid" JIDs that the outbound drainer can't rebuild
+  // from the stored phone alone, so we persist the JID per worker on every
+  // inbound and read it back in outbound. See migration 004.
+  jid?: string;
 }
 
 export interface HandleMessageResult {
@@ -281,6 +286,22 @@ export async function handleMessage(
     });
   }
   await sessions.touch(session.id);
+
+  // Persist the inbound JID so the outbound drainer can deliver to LID-mode
+  // accounts. No-op if no row exists for this phone yet (first-turn before
+  // register_tecnico, or dashboard channel where there's no JID).
+  if (input.jid) {
+    const { error: jidErr } = await baseCtx.supabase
+      .from("tecnicos_extended")
+      .update({ last_jid: input.jid })
+      .eq("phone", phone);
+    if (jidErr) {
+      log.warn("last_jid update failed (non-fatal)", {
+        phone,
+        error: jidErr.message,
+      });
+    }
+  }
 
   return {
     reply: turn.reply,
