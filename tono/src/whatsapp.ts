@@ -95,6 +95,20 @@ export class WhatsAppClient {
     }
   }
 
+  async sendDocument(
+    jid: string,
+    buffer: Buffer,
+    opts: { fileName: string; mimetype?: string; caption?: string }
+  ): Promise<void> {
+    if (!this.sock) throw new Error("socket not ready");
+    await this.sock.sendMessage(jid, {
+      document: buffer,
+      mimetype: opts.mimetype ?? "application/pdf",
+      fileName: opts.fileName,
+      caption: opts.caption,
+    });
+  }
+
   private onConnectionUpdate(u: Partial<ConnectionState>): void {
     const { connection, lastDisconnect, qr } = u;
     if (qr && this.opts.printQr !== false) {

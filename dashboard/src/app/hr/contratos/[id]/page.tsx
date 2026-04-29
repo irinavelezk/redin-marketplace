@@ -2,7 +2,11 @@
 // Server actions + simple signed URL from Supabase Storage.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-import { enqueueWhatsApp, tecnicoNotificationContext } from "@/lib/notify";
+import {
+  enqueueWhatsApp,
+  enqueueWhatsAppDocument,
+  tecnicoNotificationContext,
+} from "@/lib/notify";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
@@ -19,6 +23,21 @@ async function markSent(formData: FormData) {
   const supa = serviceClient();
   const contractId = formData.get("contract_id");
   if (typeof contractId !== "string") return;
+
+  // Fetch the contract first so we can decide whether to send the PDF as a
+  // WhatsApp document. If the borrador hasn't been generated yet (HR didn't
+  // click "Descargar borrador"), redirect with an error param so the page
+  // shows a hint instead of silently sending a text-only notification.
+  const { data: contract } = await supa
+    .from("contratos")
+    .select("ot_id, tecnico_id, pdf_storage_path")
+    .eq("id", contractId)
+    .maybeSingle();
+  if (!contract) return;
+  if (!contract.pdf_storage_path) {
+    redirect(`/hr/contratos/${contractId}?error=no_pdf`);
+  }
+
   const nowIso = new Date().toISOString();
   await supa
     .from("contratos")
@@ -31,12 +50,7 @@ async function markSent(formData: FormData) {
     meta: {},
   });
 
-  const { data: contract } = await supa
-    .from("contratos")
-    .select("ot_id, tecnico_id")
-    .eq("id", contractId)
-    .maybeSingle();
-  if (contract?.tecnico_id) {
+  if (contract.tecnico_id) {
     const { phone, descripcion } = await tecnicoNotificationContext(
       supa,
       contract.tecnico_id,
@@ -44,9 +58,12 @@ async function markSent(formData: FormData) {
     );
     if (phone) {
       const trabajo = descripcion ?? "el trabajo";
-      await enqueueWhatsApp(supa, {
+      await enqueueWhatsAppDocument(supa, {
         phone,
         body: `Te llegó el contrato de "${trabajo}". Revísalo y firma cuando puedas — cualquier duda me dices.`,
+        attachment_path: contract.pdf_storage_path,
+        attachment_filename: `contrato-${contractId.slice(0, 8)}.pdf`,
+        attachment_bucket: "contratos",
         meta: { kind: "contract_sent", contract_id: contractId },
       });
     }
@@ -124,9 +141,10 @@ async function markSigned(formData: FormData) {
 
 interface Props {
   params: { id: string };
+  searchParams?: { error?: string };
 }
 
-export default async function ContractPage({ params }: Props) {
+export default async function ContractPage({ params, searchParams }: Props) {
   const auth = serverClientBoundToCookies();
   const { data: userData } = await auth.auth.getUser();
   if (!userData.user) redirect("/login");
@@ -138,6 +156,9 @@ export default async function ContractPage({ params }: Props) {
     .eq("id", params.id)
     .maybeSingle();
   if (!contract) return <div className="card p-4">Contrato no encontrado.</div>;
+
+  const noPdfYet = !contract.pdf_storage_path;
+  const showNoPdfError = searchParams?.error === "no_pdf";
 
   return (
     <div className="space-y-4 max-w-xl">
@@ -152,6 +173,12 @@ export default async function ContractPage({ params }: Props) {
         <div className="text-sm text-slate-600">
           Estado: <strong>{contract.status}</strong>
         </div>
+        {showNoPdfError && (
+          <div className="mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
+            Tienes que descargar el borrador primero (eso genera el PDF y lo
+            sube a Storage) — luego puedes enviarlo por WhatsApp.
+          </div>
+        )}
         <div className="mt-3 flex flex-wrap gap-2">
           <a
             href={`/api/contract/${contract.id}/draft`}
@@ -165,10 +192,17 @@ export default async function ContractPage({ params }: Props) {
             <input type="hidden" name="contract_id" value={contract.id} />
             <button
               type="submit"
-              disabled={contract.status !== "borrador"}
+              disabled={contract.status !== "borrador" || noPdfYet}
+              title={
+                noPdfYet
+                  ? "Descarga el borrador primero para generar el PDF"
+                  : undefined
+              }
               className="text-sm bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-md px-3 py-1.5"
             >
-              Marcar como enviado
+              {contract.status === "borrador"
+                ? "Enviar contrato por WhatsApp"
+                : "Marcar como enviado"}
             </button>
           </form>
         </div>

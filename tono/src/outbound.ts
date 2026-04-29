@@ -34,7 +34,9 @@ export function startOutboundDrainer(opts: OutboundDrainerOpts): () => void {
     try {
       const { data, error } = await supabase
         .from("outbound_messages")
-        .select("id, phone, body, attempts")
+        .select(
+          "id, phone, body, attempts, kind, attachment_path, attachment_filename, attachment_bucket"
+        )
         .eq("status", "pending")
         .lt("attempts", MAX_ATTEMPTS)
         .order("created_at", { ascending: true })
@@ -60,9 +62,26 @@ export function startOutboundDrainer(opts: OutboundDrainerOpts): () => void {
           continue;
         }
         try {
-          await wa.sendText(jid, row.body);
+          if (row.kind === "document" && row.attachment_path) {
+            const bucket = row.attachment_bucket ?? "contratos";
+            const { data: blob, error: dlErr } = await supabase.storage
+              .from(bucket)
+              .download(row.attachment_path);
+            if (dlErr || !blob) {
+              throw new Error(`storage download failed: ${dlErr?.message ?? "no blob"}`);
+            }
+            const arrBuf = await blob.arrayBuffer();
+            const buffer = Buffer.from(arrBuf);
+            await wa.sendDocument(jid, buffer, {
+              fileName: row.attachment_filename ?? "documento.pdf",
+              mimetype: "application/pdf",
+              caption: row.body,
+            });
+          } else {
+            await wa.sendText(jid, row.body);
+          }
           await markSent(supabase, row.id);
-          log.info("sent", { id: row.id, phone: row.phone, jid });
+          log.info("sent", { id: row.id, phone: row.phone, jid, kind: row.kind ?? "text" });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           await markRetry(supabase, row.id, (row.attempts ?? 0) + 1, msg);

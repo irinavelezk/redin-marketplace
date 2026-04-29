@@ -196,6 +196,7 @@ export type RatingRow = {
 };
 
 export type OutboundStatus = "pending" | "sent" | "failed";
+export type OutboundKind = "text" | "document";
 export type OutboundMessageRow = {
   id: string;
   phone: string;
@@ -207,6 +208,10 @@ export type OutboundMessageRow = {
   sent_at: string | null;
   last_error: string | null;
   meta: Json | null;
+  kind: OutboundKind;
+  attachment_path: string | null;
+  attachment_filename: string | null;
+  attachment_bucket: string | null;
 };
 
 // Mirrors store the AppSheet row as jsonb `data`; we extract a few columns
@@ -378,13 +383,14 @@ export interface Database {
         OptionalNulls<
           Omit<
             OutboundMessageRow,
-            "id" | "created_at" | "channel" | "status" | "attempts"
+            "id" | "created_at" | "channel" | "status" | "attempts" | "kind"
           > & {
             id?: string;
             created_at?: string;
             channel?: string;
             status?: OutboundStatus;
             attempts?: number;
+            kind?: OutboundKind;
           }
         >,
         Partial<OutboundMessageRow>

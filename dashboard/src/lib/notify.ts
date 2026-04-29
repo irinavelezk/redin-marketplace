@@ -20,13 +20,51 @@ export async function enqueueWhatsApp(
     phone,
     body,
     channel: "whatsapp",
+    kind: "text",
     meta: args.meta ?? null,
   });
   if (error) {
-    // Don't throw — a failed enqueue must not block the HR action that
-    // triggered it. The DB write that mattered (postulación / contrato)
-    // already succeeded; the missing notification is a softer failure.
     console.error("enqueueWhatsApp failed", { phone, error: error.message });
+  }
+}
+
+// Sends a Storage-backed document (currently always PDF in the contratos
+// bucket) as a WhatsApp document with `body` as caption. The drainer in
+// tono-mp downloads the file and forwards it via Baileys' document send.
+export async function enqueueWhatsAppDocument(
+  supa: SupabaseClient,
+  args: {
+    phone: string;
+    body: string;
+    attachment_path: string;
+    attachment_filename: string;
+    attachment_bucket?: string;
+    meta?: Record<string, unknown>;
+  }
+): Promise<void> {
+  const phone = normalizePhone(args.phone);
+  if (!phone) {
+    console.warn("enqueueWhatsAppDocument skipped: phone empty");
+    return;
+  }
+  const body = args.body.trim();
+  if (!args.attachment_path) return;
+  const { error } = await supa.from("outbound_messages").insert({
+    phone,
+    body,
+    channel: "whatsapp",
+    kind: "document",
+    attachment_path: args.attachment_path,
+    attachment_filename: args.attachment_filename,
+    attachment_bucket: args.attachment_bucket ?? "contratos",
+    meta: args.meta ?? null,
+  });
+  if (error) {
+    console.error("enqueueWhatsAppDocument failed", {
+      phone,
+      attachment_path: args.attachment_path,
+      error: error.message,
+    });
   }
 }
 
