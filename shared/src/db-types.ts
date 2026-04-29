@@ -194,6 +194,20 @@ export type RatingRow = {
   created_at: string;
 };
 
+export type OutboundStatus = "pending" | "sent" | "failed";
+export type OutboundMessageRow = {
+  id: string;
+  phone: string;
+  body: string;
+  channel: string;
+  status: OutboundStatus;
+  attempts: number;
+  created_at: string;
+  sent_at: string | null;
+  last_error: string | null;
+  meta: Json | null;
+};
+
 // Mirrors store the AppSheet row as jsonb `data`; we extract a few columns
 // we query by (`ciudad`, `especialidad`, `estado` on ots_mirror).
 export type MirrorRowBase = {
@@ -357,6 +371,22 @@ export interface Database {
           }
         >,
         Partial<RatingRow>
+      >;
+      outbound_messages: Table<
+        OutboundMessageRow,
+        OptionalNulls<
+          Omit<
+            OutboundMessageRow,
+            "id" | "created_at" | "channel" | "status" | "attempts"
+          > & {
+            id?: string;
+            created_at?: string;
+            channel?: string;
+            status?: OutboundStatus;
+            attempts?: number;
+          }
+        >,
+        Partial<OutboundMessageRow>
       >;
       tecnicos_mirror: Table<
         TecnicoMirrorRow,

@@ -235,9 +235,12 @@ export default async function HrTecnicosPage({
                 return (
                   <tr key={t.tecnico_id} className="border-t border-slate-100">
                     <td className="px-3 py-2">
-                      <div className="font-medium text-slate-900">
+                      <Link
+                        href={`/hr/tecnicos/${encodeURIComponent(t.tecnico_id)}`}
+                        className="font-medium text-slate-900 hover:text-amber-700"
+                      >
                         {reg?.nombre ?? "—"}
-                      </div>
+                      </Link>
                       <div className="text-xs text-slate-500">{t.phone}</div>
                     </td>
                     <td className="px-3 py-2">
