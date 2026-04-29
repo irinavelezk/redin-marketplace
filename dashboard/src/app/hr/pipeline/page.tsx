@@ -81,6 +81,12 @@ export default async function HrPipelinePage() {
             Cola de calificación →
           </Link>
           <Link
+            href="/hr/tecnicos"
+            className="text-sm text-slate-600 hover:text-slate-900"
+          >
+            Técnicos →
+          </Link>
+          <Link
             href="/hr/evaluations"
             className="text-sm text-slate-600 hover:text-slate-900"
           >

@@ -191,12 +191,14 @@ export default async function HrQualificationQueuePage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-slate-900">Cola de calificación</h1>
-        <Link
-          href="/hr/pipeline"
-          className="text-sm text-slate-500 hover:text-slate-700"
-        >
-          Pipeline →
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link href="/hr/tecnicos" className="text-sm text-slate-600 hover:text-slate-900">
+            Técnicos →
+          </Link>
+          <Link href="/hr/pipeline" className="text-sm text-slate-500 hover:text-slate-700">
+            Pipeline →
+          </Link>
+        </div>
       </div>
       <p className="text-sm text-slate-600">
         Técnicos esperando aprobación. <strong>needs_review</strong> = Toño ya
