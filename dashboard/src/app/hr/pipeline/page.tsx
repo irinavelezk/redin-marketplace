@@ -15,26 +15,62 @@ export default async function HrPipelinePage() {
   if (!userData.user) redirect("/login");
 
   const supa = serviceClient();
-  const { data: ots } = await supa
-    .from("ots_mirror")
-    .select("row_id, ciudad, especialidad, estado, data")
-    .order("synced_at", { ascending: false })
-    .limit(50);
 
-  const pendingOts = (ots ?? []).filter(
+  // Two-source pull so OTs with postulaciones can never be hidden by the
+  // recency cutoff. Source A: every OT that has any postulación (so HR sees
+  // actionable items even if the OT was synced days ago). Source B: top 30
+  // most-recently-synced OTs (so HR can also see open work nobody applied to).
+  // Merged + deduped, A first.
+  const { data: allPosts } = await supa
+    .from("postulaciones")
+    .select("*");
+  const otIdsWithPosts = [...new Set((allPosts ?? []).map((p) => p.ot_id))];
+
+  const { data: otsWithPosts } = otIdsWithPosts.length
+    ? await supa
+        .from("ots_mirror")
+        .select("row_id, ciudad, especialidad, estado, data, synced_at")
+        .in("row_id", otIdsWithPosts)
+        .order("synced_at", { ascending: false })
+    : { data: [] };
+
+  const { data: otsRecent } = await supa
+    .from("ots_mirror")
+    .select("row_id, ciudad, especialidad, estado, data, synced_at")
+    .order("synced_at", { ascending: false })
+    .limit(30);
+
+  const seen = new Set<string>();
+  const ots: NonNullable<typeof otsRecent> = [];
+  for (const o of otsWithPosts ?? []) {
+    if (!seen.has(o.row_id)) {
+      seen.add(o.row_id);
+      ots.push(o);
+    }
+  }
+  for (const o of otsRecent ?? []) {
+    if (!seen.has(o.row_id)) {
+      seen.add(o.row_id);
+      ots.push(o);
+    }
+  }
+
+  const pendingOts = ots.filter(
     (o) => !o.estado || !["Terminado", "Facturado", "Pagado", "99. Perdida / Cancelada"].includes(o.estado)
   );
 
-  // Fetch postulaciones for just these OTs in one round-trip.
+  // allPosts above already covers what we need; the per-OT mapping below
+  // filters to just these pendingOts.
   const otIds = pendingOts.map((o) => o.row_id);
-  const { data: allPosts } = otIds.length
-    ? await supa.from("postulaciones").select("*").in("ot_id", otIds)
-    : { data: [] as PostulacionRow[] };
+  void otIds;
+  const allPostsForPending: PostulacionRow[] = (allPosts ?? []).filter((p) =>
+    seen.has(p.ot_id)
+  );
 
   // Internal performance (Jose + arquitectos via /hr/evaluations). Replaces
   // the legacy customer-stars ratings — Phase 1 has no direct customer
   // relationship, so calidad is scored from inside.
-  const tecnicoIds = [...new Set((allPosts ?? []).map((p) => p.tecnico_id))];
+  const tecnicoIds = [...new Set(allPostsForPending.map((p) => p.tecnico_id))];
   const { data: perfRows } = tecnicoIds.length
     ? await supa
         .from("tecnico_performance")
@@ -64,7 +100,7 @@ export default async function HrPipelinePage() {
 
   // Group posts by ot.
   const postsByOt = new Map<string, PostulacionRow[]>();
-  for (const p of allPosts ?? []) {
+  for (const p of allPostsForPending) {
     if (!postsByOt.has(p.ot_id)) postsByOt.set(p.ot_id, []);
     postsByOt.get(p.ot_id)!.push(p);
   }
