@@ -144,12 +144,16 @@ export default async function HrQualificationQueuePage() {
 
   const supa = serviceClient();
 
-  // Pending = Toño still gathering. needs_review = ready for HR. Both surface
-  // here so HR can also kick a stuck "pending" forward by approving directly.
+  // pending      = Toño still gathering
+  // needs_review = ready for HR
+  // needs_call   = HR asked for a call; surface so HR can come back after the
+  //                call and approve / reject. (If we filtered this out, the
+  //                worker would silently disappear from the queue the moment
+  //                "Pedir llamada" gets clicked.)
   const { data: tecnicos } = await supa
     .from("tecnicos_extended")
     .select("*")
-    .in("qualification_state", ["pending", "needs_review"])
+    .in("qualification_state", ["pending", "needs_review", "needs_call"])
     .order("onboarded_at", { ascending: false })
     .limit(100);
 
@@ -197,7 +201,9 @@ export default async function HrQualificationQueuePage() {
       <p className="text-sm text-slate-600">
         Técnicos esperando aprobación. <strong>needs_review</strong> = Toño ya
         recogió contexto suficiente. <strong>pending</strong> = aún en charla;
-        puedes aprobar tú si conoces al técnico de antes.
+        puedes aprobar tú si conoces al técnico de antes.{" "}
+        <strong>needs_call</strong> = pediste una llamada; vuelve aquí después
+        de hacerla y aprueba o rechaza.
       </p>
 
       {(tecnicos ?? []).length === 0 ? (
@@ -209,7 +215,12 @@ export default async function HrQualificationQueuePage() {
           {(tecnicos ?? []).map((tec) => {
             const reg = regByTec.get(tec.tecnico_id);
             const review = reviewByTec.get(tec.tecnico_id);
-            const isReady = tec.qualification_state === "needs_review";
+            const stateClass =
+              tec.qualification_state === "needs_review"
+                ? "text-emerald-600 font-medium"
+                : tec.qualification_state === "needs_call"
+                ? "text-blue-600 font-medium"
+                : "text-amber-600";
             return (
               <li key={tec.tecnico_id} className="card p-4">
                 <div className="flex items-start justify-between gap-4">
@@ -223,13 +234,7 @@ export default async function HrQualificationQueuePage() {
                     <div className="text-xs text-slate-500 mt-0.5">
                       {tec.phone} · onboarded{" "}
                       {new Date(tec.onboarded_at).toLocaleString("es-CO")} ·{" "}
-                      <span
-                        className={
-                          isReady ? "text-emerald-600 font-medium" : "text-amber-600"
-                        }
-                      >
-                        {tec.qualification_state}
-                      </span>
+                      <span className={stateClass}>{tec.qualification_state}</span>
                     </div>
                     {reg?.especialidades && reg.especialidades.length > 0 && (
                       <div className="text-sm text-slate-700 mt-2">
