@@ -17,12 +17,11 @@ interface OtRow {
   data: unknown;
 }
 
-const TERMINAL_ESTADOS = new Set([
-  "Terminado",
-  "Facturado",
-  "Pagado",
-  "99. Perdida / Cancelada",
-]);
+// Only OTs in this state are "offerable" to a maestro de obra. Earlier
+// states aren't ready for a worker to take; later states are already in
+// motion or closed. The state literal must match AppSheet exactly
+// (em-dash, leading "4." prefix).
+const OFFERABLE_ESTADO = "4. Coordinar – Listo para ejecutar";
 
 function descripcionFrom(data: unknown): string {
   if (!data || typeof data !== "object" || Array.isArray(data)) return "";
@@ -34,25 +33,48 @@ function descripcionFrom(data: unknown): string {
   return "";
 }
 
+// Pulls Valor_Estimado from the AppSheet OT row (string in jsonb) and returns
+// it formatted as Colombian Pesos. Maestro de obra needs to know what the job
+// pays before deciding to take it.
+function valorLabelFrom(data: unknown): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const raw = (data as Record<string, unknown>).Valor_Estimado;
+  if (typeof raw !== "string") return null;
+  const num = Number.parseFloat(raw.replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  }).format(num);
+}
+
+// Pulls Fecha_Programada from the AppSheet OT row and returns dd/mm/yyyy.
+// Tolerates ISO ("2026-05-12") and US ("5/12/2026") formats — both come out
+// of AppSheet depending on column type.
+function fechaProgramadaLabelFrom(data: unknown): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const raw = (data as Record<string, unknown>).Fecha_Programada;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("es-CO", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
 export default async function Home() {
   const supa = serviceClient();
-  // Filter terminal estados at the DB so the public board surfaces all open
-  // work, not just whatever happened to be at the top of the latest 30 syncs.
-  // (AppSheet sync re-touches all rows; Pagado dominates the recent activity
-  // and used to drown out the active ones.)
   const { data, error } = await supa
     .from("ots_mirror")
     .select("row_id, ciudad, especialidad, estado, data")
-    .neq("estado", "Pagado")
-    .neq("estado", "Facturado")
-    .neq("estado", "Terminado")
-    .neq("estado", "99. Perdida / Cancelada")
+    .eq("estado", OFFERABLE_ESTADO)
     .order("synced_at", { ascending: false })
     .limit(100);
 
-  const pending: OtRow[] = (data ?? []).filter(
-    (o) => !o.estado || !TERMINAL_ESTADOS.has(o.estado)
-  );
+  const pending: OtRow[] = data ?? [];
   const loadError = error?.message;
 
   return (
@@ -103,7 +125,10 @@ export default async function Home() {
           </div>
         )}
         <ul className="grid sm:grid-cols-2 gap-3">
-          {pending.map((ot) => (
+          {pending.map((ot) => {
+            const valorLabel = valorLabelFrom(ot.data);
+            const fechaLabel = fechaProgramadaLabelFrom(ot.data);
+            return (
             <li key={ot.row_id} className="card p-4 flex flex-col">
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -119,6 +144,22 @@ export default async function Home() {
               <p className="mt-2 text-sm text-slate-700">
                 {redactForPublic(descripcionFrom(ot.data))}
               </p>
+              {(valorLabel || fechaLabel) && (
+                <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-slate-600">
+                  {valorLabel && (
+                    <span>
+                      <span className="text-slate-500">Presupuesto:</span>{" "}
+                      <span className="font-medium text-slate-900">{valorLabel}</span>
+                    </span>
+                  )}
+                  {fechaLabel && (
+                    <span>
+                      <span className="text-slate-500">Inicia:</span>{" "}
+                      <span className="font-medium text-slate-900">{fechaLabel}</span>
+                    </span>
+                  )}
+                </div>
+              )}
               <div className="mt-4">
                 <Link
                   href={`/aplicar/${encodeURIComponent(ot.row_id)}`}
@@ -128,7 +169,8 @@ export default async function Home() {
                 </Link>
               </div>
             </li>
-          ))}
+            );
+          })}
         </ul>
       </section>
     </div>

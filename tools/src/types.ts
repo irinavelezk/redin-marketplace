@@ -80,6 +80,14 @@ export interface PendingOtSummary {
   shortlist_count: number;
   postulacion_count: number;
   created_at: string | null;
+  // Budget — Valor_Estimado from AppSheet, parsed and pre-formatted as COP
+  // ($ X.XXX.XXX). The agent should quote the label as-is; the numeric form
+  // is exposed only for downstream sorts/filters.
+  valor_estimado: number | null;
+  valor_estimado_label: string | null;
+  // Fecha_Programada from AppSheet, formatted dd/mm/yyyy. Tells the worker
+  // when the job actually starts.
+  fecha_programada: string | null;
 }
 export interface ReadPendingOtsOutput {
   ots: PendingOtSummary[];

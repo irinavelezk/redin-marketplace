@@ -1,9 +1,9 @@
-// read_pending_ots — list OTs currently in the marketplace queue, optionally
+// read_pending_ots — list OTs currently offerable to a worker, optionally
 // filtered by ciudad / especialidad / técnico profile match.
 //
-// "Pending" = estado NOT in terminal states. We treat anything that's not
-// Facturado/Pagado/Terminado/Cancelada as a candidate for marketplace broadcast.
-// The agent gets the full list so it can re-filter and describe.
+// Only OTs in state "4. Coordinar – Listo para ejecutar" are offerable. Earlier
+// states aren't ready for a worker to take; later states are already in motion
+// or closed. The literal must match AppSheet exactly (em-dash, "4." prefix).
 
 import type { Json } from "@redin/shared";
 import type { ToolContext } from "./context";
@@ -15,13 +15,7 @@ import type {
 } from "./types";
 import { err, ok } from "./types";
 
-// Treat these as "closed" — do NOT surface to the marketplace.
-const TERMINAL_ESTADOS = [
-  "Terminado",
-  "Facturado",
-  "Pagado",
-  "99. Perdida / Cancelada",
-];
+const OFFERABLE_ESTADO = "4. Coordinar – Listo para ejecutar";
 
 function descripcionFrom(data: Json): string {
   if (!data || typeof data !== "object" || Array.isArray(data)) return "";
@@ -32,6 +26,33 @@ function descripcionFrom(data: Json): string {
     if (typeof v === "string" && v.trim().length > 0) return v.trim();
   }
   return "";
+}
+
+function valorEstimadoFrom(data: Json): { num: number | null; label: string | null } {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return { num: null, label: null };
+  const raw = (data as Record<string, unknown>).Valor_Estimado;
+  if (typeof raw !== "string") return { num: null, label: null };
+  const num = Number.parseFloat(raw.replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(num) || num <= 0) return { num: null, label: null };
+  const label = new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  }).format(num);
+  return { num, label };
+}
+
+function fechaProgramadaFrom(data: Json): string | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const raw = (data as Record<string, unknown>).Fecha_Programada;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString("es-CO", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
 }
 
 export async function readPendingOts(
@@ -64,17 +85,10 @@ export async function readPendingOts(
   const ciudadFilter = input.ciudad?.trim();
   const especialidadFilter = input.especialidad?.trim();
 
-  // Push the terminal-estado filter into the DB so limit=100 actually returns
-  // open work. AppSheet re-touches every row each sync, so synced_at is uniform
-  // across the table; without this filter the top-100 slice was dominated by
-  // Pagado / Facturado and active OTs got hidden behind them.
   const { data: rawOts, error } = await ctx.supabase
     .from("ots_mirror")
     .select("*")
-    .neq("estado", "Pagado")
-    .neq("estado", "Facturado")
-    .neq("estado", "Terminado")
-    .neq("estado", "99. Perdida / Cancelada")
+    .eq("estado", OFFERABLE_ESTADO)
     .order("synced_at", { ascending: false })
     .limit(limit);
 
@@ -84,14 +98,11 @@ export async function readPendingOts(
 
   // Application-side filters for ciudad / especialidad — PostgREST struggles
   // with accents (Bogotá, plomería) and we want substring/normalized match.
-  // TERMINAL guard stays as a redundant safety in case a new terminal value
-  // gets added before the DB list is updated.
   const normalize = (s: string) =>
     s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
   const ciudadNorm = ciudadFilter ? normalize(ciudadFilter) : null;
   const especNorm = especialidadFilter ? normalize(especialidadFilter) : null;
   const ots = (rawOts ?? []).filter((o) => {
-    if (TERMINAL_ESTADOS.includes(o.estado ?? "")) return false;
     if (ciudadNorm && !normalize(o.ciudad ?? "").includes(ciudadNorm)) return false;
     if (especNorm && !normalize(o.especialidad ?? "").includes(especNorm)) return false;
     return true;
@@ -127,6 +138,7 @@ export async function readPendingOts(
       const fc = d["Fecha_Creacion"];
       if (typeof fc === "string") createdAt = fc;
     }
+    const valor = valorEstimadoFrom(data);
     return {
       ot_id: o.row_id,
       ciudad: o.ciudad,
@@ -136,6 +148,9 @@ export async function readPendingOts(
       postulacion_count: totalByOt.get(o.row_id) ?? 0,
       shortlist_count: shortlistByOt.get(o.row_id) ?? 0,
       created_at: createdAt,
+      valor_estimado: valor.num,
+      valor_estimado_label: valor.label,
+      fecha_programada: fechaProgramadaFrom(data),
     };
   });
 
