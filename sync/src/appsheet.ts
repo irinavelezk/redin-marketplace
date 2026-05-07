@@ -61,6 +61,7 @@ export const MIRROR_TABLES = {
   CLIENTES: "Clientes",
   ARQUITECTOS: "Arquitecto",
   ACTIVIDADES: "Detalle de Actividades",
+  CONTACTOS: "CONTACTOS",
 } as const;
 
 // Narrow views of the AppSheet rows we care about. Keep loose — AppSheet

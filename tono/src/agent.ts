@@ -29,6 +29,7 @@ import {
   applyToolResultToSession,
   type TurnSession,
 } from "./router";
+import { tryHandleCustomerRatingReply } from "./customer-ratings";
 
 const log = createLogger("tono:agent");
 
@@ -134,6 +135,27 @@ export async function handleMessage(
   const actor: Actor = `tecnico:${phone}`;
   // Build a provisional context (no session_id yet) to get the supabase client.
   const baseCtx = input.toolCtx ?? makeDefaultToolContext({ defaultActor: actor });
+
+  // Pre-LLM branch: if this phone has an outstanding customer-rating request
+  // from sync-mp, parse the reply and short-circuit. We never invoke the LLM
+  // for these — the customer is not a técnico and Toño's prompt would fail
+  // to handle the reply correctly. Returning early also avoids creating a
+  // session row for a one-shot customer reply.
+  const ratingResult = await tryHandleCustomerRatingReply(
+    baseCtx.supabase,
+    phone,
+    text
+  );
+  if (ratingResult.handled) {
+    log.info("customer rating: handled pre-LLM", { phone });
+    return {
+      reply: ratingResult.reply ?? "",
+      session_id: "",
+      tool_calls: [],
+      tool_calls_full: [],
+    };
+  }
+
   const sessions = new SessionStore(baseCtx.supabase);
 
   const session = await sessions.getOrCreate(phone, input.channel);

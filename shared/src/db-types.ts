@@ -233,6 +233,11 @@ export type OTMirrorRow = MirrorRowBase & {
   estado: string | null;
 };
 
+export type ContactoMirrorRow = MirrorRowBase & {
+  id_contacto: string | null;
+  telefono: string | null;
+};
+
 // ---------- Supabase Database schema handle ----------
 // Shape compatible with @supabase/postgrest-js GenericSchema:
 //   Tables: Record<string, { Row, Insert, Update, Relationships: GenericRelationship[] }>
@@ -419,6 +424,11 @@ export interface Database {
         ActividadMirrorRow,
         Omit<ActividadMirrorRow, "synced_at"> & { synced_at?: string },
         Partial<ActividadMirrorRow>
+      >;
+      contactos_mirror: Table<
+        ContactoMirrorRow,
+        Omit<ContactoMirrorRow, "synced_at"> & { synced_at?: string },
+        Partial<ContactoMirrorRow>
       >;
     };
     Views: {
