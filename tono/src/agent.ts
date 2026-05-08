@@ -1,20 +1,34 @@
 // The Toño agent — channel-agnostic. It takes an incoming message from some
-// channel (WhatsApp or dashboard chat), loads session history, calls Gemini,
+// channel (WhatsApp or dashboard chat), loads session history, calls Anthropic,
 // executes tool calls, persists everything, and returns the reply.
 //
 // Channel wrappers (Baileys in this repo, Next.js route handler in dashboard)
 // adapt the transport but call the same function.
+//
+// Stream A additions (2026-05-07):
+//  - candidate_state replaces qualification_state (migration 007)
+//  - three-case routing at conversation start (CASE A enrichment / CASE B
+//    screening / CASE C returning), surfaced to the LLM as
+//    [session_state: candidate_state=…, profile_complete=…, mode=…]
+//  - per-turn write to the turns table for live debugging + cost rollup
+//  - cost kill switch on NEW conversations only (in-flight conversations
+//    always continue, per contract §9.3)
+//  - new tools: submit_candidate_dossier, find_by_cedula,
+//    mark_candidate_withdrawn, complete_legacy_profile, find_legacy_by_name
 
 import {
   createLogger,
   normalizePhone,
+  type CandidateState,
   type Json,
   type MessageRow,
+  type ServerClient,
+  type SessionChannel,
 } from "@redin/shared";
-import type { SessionChannel } from "@redin/shared";
 import {
   dispatchTool,
   makeDefaultToolContext,
+  recordEvent,
   type Actor,
   type ToolContext,
   type ToolResult,
@@ -33,16 +47,13 @@ import { tryHandleCustomerRatingReply } from "./customer-ratings";
 
 const log = createLogger("tono:agent");
 
+const DEFAULT_DAILY_LLM_COST_USD = 10;
+
 export interface HandleMessageInput {
   phone: string;
   text: string;
   channel: SessionChannel;
-  // Optional overrides for tests / dashboard API route.
   toolCtx?: ToolContext;
-  // Original Baileys JID — captured to support LID accounts. WhatsApp privacy
-  // mode produces "<digits>@lid" JIDs that the outbound drainer can't rebuild
-  // from the stored phone alone, so we persist the JID per worker on every
-  // inbound and read it back in outbound. See migration 004.
   jid?: string;
 }
 
@@ -50,23 +61,23 @@ export interface HandleMessageResult {
   reply: string;
   session_id: string;
   tool_calls: { name: string; args: Record<string, unknown>; result_ok: boolean }[];
-  /** Eval-only: full ToolResult payloads. Always populated; production callers may ignore. */
   tool_calls_full: { name: string; args: Record<string, unknown>; result: ToolResult<unknown> }[];
 }
 
-// Convert persisted MessageRow[] to the LLM-facing ConversationTurn[] shape.
-// User messages are wrapped in <data source="tecnico"> so the model treats them
-// as content, never as instructions (PRD §20 injection defense).
-// Tool responses are wrapped in <data source="tool"> for the same reason — tool
-// outputs may carry user-generated content (e.g. mensajes from postulaciones).
+type RoutingMode = "enrichment" | "screening" | "returning";
+
+type TurnError = {
+  stage: "llm" | "router" | "tool" | "cost";
+  code: string;
+  message?: string;
+};
+
 function toTurns(rows: MessageRow[]): ConversationTurn[] {
   const out: ConversationTurn[] = [];
   for (const r of rows) {
     if (r.role === "user" && r.content) {
       out.push({ role: "user", text: wrapData(r.content, "tecnico") });
     } else if (r.role === "assistant") {
-      // We stored tool_calls jsonb alongside assistant messages when the assistant
-      // emitted tool calls. Represent them as a tool_call turn.
       if (r.tool_calls) {
         const calls = normalizeToolCalls(r.tool_calls);
         if (calls.length > 0) out.push({ role: "tool_call", calls });
@@ -108,9 +119,6 @@ function normalizeToolResponses(
     if (item && typeof item === "object" && !Array.isArray(item)) {
       const obj = item as Record<string, unknown>;
       const name = typeof obj.name === "string" ? obj.name : "";
-      // Wrap string tool responses in <data source="tool"> so the model
-      // treats the payload as content, never as instructions (PRD §20).
-      // Non-string responses (objects/arrays) are serialized then wrapped.
       const raw_response = obj.response;
       const response =
         typeof raw_response === "string"
@@ -124,6 +132,120 @@ function normalizeToolResponses(
   return out;
 }
 
+// Pull display name with priority order: tecnico_legacy_bootstrap event ->
+// tecnico_registered event -> tecnicos_mirror.data fallback. Legacy first
+// because CASE A enrichment workers only have the bootstrap event;
+// tecnico_registered is what cold workers leave.
+async function loadDisplayName(
+  sb: ServerClient,
+  tecnico_id: string
+): Promise<string | null> {
+  const fromMeta = (m: unknown): string | null => {
+    if (m && typeof m === "object" && !Array.isArray(m)) {
+      const obj = m as Record<string, unknown>;
+      if (typeof obj.nombre === "string" && obj.nombre.trim().length > 0) {
+        return obj.nombre.trim();
+      }
+    }
+    return null;
+  };
+
+  const { data: legacy } = await sb
+    .from("eventos")
+    .select("meta")
+    .eq("type", "tecnico_legacy_bootstrap")
+    .eq("entity_id", tecnico_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const fromLegacy = fromMeta(legacy?.meta);
+  if (fromLegacy) return fromLegacy;
+
+  const { data: reg } = await sb
+    .from("eventos")
+    .select("meta")
+    .eq("type", "tecnico_registered")
+    .eq("entity_id", tecnico_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const fromReg = fromMeta(reg?.meta);
+  if (fromReg) return fromReg;
+
+  const { data: mirror } = await sb
+    .from("tecnicos_mirror")
+    .select("data")
+    .eq("row_id", tecnico_id)
+    .maybeSingle();
+  if (mirror?.data && typeof mirror.data === "object" && !Array.isArray(mirror.data)) {
+    const m = mirror.data as Record<string, unknown>;
+    const cand =
+      m["Nombre de Tecnico"] ?? m["Nombre"] ?? m["nombre"] ?? m["NOMBRE"];
+    if (typeof cand === "string" && cand.trim().length > 0) return cand.trim();
+  }
+  return null;
+}
+
+// Classify whether this is a NEW conversation (cost kill switch applies) or
+// an in-flight one (always proceed). Per contract §9.3:
+//   in-flight = phone has tecnicos_extended row in screening | pending |
+//               needs_call, OR session has at least one prior turn.
+// Anything else = new conversation.
+async function isNewConversation(
+  sb: ServerClient,
+  sessionId: string,
+  candidateState: CandidateState | null
+): Promise<boolean> {
+  const inFlightStates: CandidateState[] = ["screening", "pending", "needs_call"];
+  if (candidateState !== null && inFlightStates.includes(candidateState)) {
+    return false;
+  }
+  const { count } = await sb
+    .from("turns")
+    .select("id", { count: "exact", head: true })
+    .eq("session_id", sessionId);
+  if (typeof count === "number" && count > 0) return false;
+  return true;
+}
+
+async function nextTurnNumber(sb: ServerClient, sessionId: string): Promise<number> {
+  const { data } = await sb
+    .from("turns")
+    .select("turn_number")
+    .eq("session_id", sessionId)
+    .order("turn_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return ((data?.turn_number as number | undefined) ?? 0) + 1;
+}
+
+// Read today's UTC LLM cost from the daily_llm_cost view.
+async function readTodayCost(sb: ServerClient): Promise<number> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data, error } = await sb
+    .from("daily_llm_cost")
+    .select("cost_usd")
+    .eq("utc_date", today)
+    .maybeSingle();
+  if (error) {
+    log.warn("daily_llm_cost read failed", { error: error.message });
+    return 0;
+  }
+  if (!data) return 0;
+  const v = (data as { cost_usd: number | string }).cost_usd;
+  return typeof v === "number" ? v : parseFloat(v as string) || 0;
+}
+
+async function hasCostOverrideToday(sb: ServerClient): Promise<boolean> {
+  const today = new Date().toISOString().slice(0, 10);
+  const { data } = await sb
+    .from("cost_kill_switch_overrides")
+    .select("id")
+    .eq("override_date", today)
+    .maybeSingle();
+  return !!data;
+}
+
 export async function handleMessage(
   input: HandleMessageInput
 ): Promise<HandleMessageResult> {
@@ -132,15 +254,12 @@ export async function handleMessage(
   const text = (input.text ?? "").trim();
   if (!text) throw new Error("text required");
 
+  const startedAt = Date.now();
   const actor: Actor = `tecnico:${phone}`;
-  // Build a provisional context (no session_id yet) to get the supabase client.
   const baseCtx = input.toolCtx ?? makeDefaultToolContext({ defaultActor: actor });
 
-  // Pre-LLM branch: if this phone has an outstanding customer-rating request
-  // from sync-mp, parse the reply and short-circuit. We never invoke the LLM
-  // for these — the customer is not a técnico and Toño's prompt would fail
-  // to handle the reply correctly. Returning early also avoids creating a
-  // session row for a one-shot customer reply.
+  // Pre-LLM short-circuit: if the inbound is a customer rating reply, handle
+  // it without touching Toño at all.
   const ratingResult = await tryHandleCustomerRatingReply(
     baseCtx.supabase,
     phone,
@@ -157,10 +276,9 @@ export async function handleMessage(
   }
 
   const sessions = new SessionStore(baseCtx.supabase);
-
   const session = await sessions.getOrCreate(phone, input.channel);
-  // Rebuild toolCtx with session_id now that we have it.
   const toolCtx: ToolContext = { ...baseCtx, session_id: session.id };
+
   log.info("incoming", {
     phone,
     channel: input.channel,
@@ -168,49 +286,142 @@ export async function handleMessage(
     text_len: text.length,
   });
 
-  // Persist inbound BEFORE calling the model — if we crash, we still have the user's words.
+  // Three-case routing — read the worker's row and decide which mode applies.
+  // CASE A (enrichment): approved + profile_complete=false -> Toño collects
+  //                      missing fields via complete_legacy_profile.
+  // CASE B (screening):  no row, or row in any non-approved state -> standard
+  //                      contract flow.
+  // CASE C (returning):  approved + profile_complete=true -> minimal greeting,
+  //                      future job-application flows live here.
+  const turnSession: TurnSession = createTurnSession();
+  let routingMode: RoutingMode = "screening";
+  let currentCandidateState: CandidateState | null = null;
+  let profileComplete = false;
+  let nombreFromRow: string | null = null;
+  {
+    const { data: existing } = await baseCtx.supabase
+      .from("tecnicos_extended")
+      .select("tecnico_id, candidate_state, profile_complete")
+      .eq("phone", phone)
+      .maybeSingle();
+    if (existing?.tecnico_id) {
+      turnSession.tecnico_id = existing.tecnico_id;
+      currentCandidateState = existing.candidate_state as CandidateState;
+      profileComplete = !!existing.profile_complete;
+      if (currentCandidateState === "approved" && !profileComplete) {
+        routingMode = "enrichment";
+      } else if (currentCandidateState === "approved" && profileComplete) {
+        routingMode = "returning";
+      } else {
+        routingMode = "screening";
+      }
+      nombreFromRow = await loadDisplayName(baseCtx.supabase, existing.tecnico_id);
+    }
+  }
+
+  // Persist inbound BEFORE the cost check so the user message is never lost.
   await sessions.recordMessage({
     sessionId: session.id,
     role: "user",
     content: text,
   });
 
-  // Load recent history (includes the message we just inserted; we'll skip the tail
-  // since runTurn takes userMessage separately).
+  // ---------- Cost kill switch (NEW conversations only) ----------
+  // Per contract §9.3: in-flight conversations always continue. We classify
+  // BEFORE reading cost so the read is skipped for in-flight calls.
+  const newConversation = await isNewConversation(
+    baseCtx.supabase,
+    session.id,
+    currentCandidateState
+  );
+  if (newConversation) {
+    const cap =
+      parseFloat(process.env.TONO_DAILY_COST_USD_LIMIT ?? `${DEFAULT_DAILY_LLM_COST_USD}`) ||
+      DEFAULT_DAILY_LLM_COST_USD;
+    const [todayCost, hasOverride] = await Promise.all([
+      readTodayCost(baseCtx.supabase),
+      hasCostOverrideToday(baseCtx.supabase),
+    ]);
+    if (todayCost >= cap && !hasOverride) {
+      log.warn("cost kill switch triggered", {
+        phone,
+        today_cost_usd: todayCost,
+        cap_usd: cap,
+      });
+      await recordEvent(toolCtx, {
+        type: "cost_kill_switch_triggered",
+        entity_id: session.id,
+        actor: "agent",
+        meta: {
+          today_cost_usd: todayCost,
+          cap_usd: cap,
+          phone,
+        },
+      }).catch((e) => {
+        log.warn("kill-switch event log failed (non-fatal)", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      });
+
+      const holdingReply =
+        "Hoy estamos al tope del cupo de IA por el día. Mañana retomamos.";
+
+      await sessions.recordMessage({
+        sessionId: session.id,
+        role: "assistant",
+        content: holdingReply,
+      });
+
+      const turnNumber = await nextTurnNumber(baseCtx.supabase, session.id);
+      await baseCtx.supabase.from("turns").insert({
+        session_id: session.id,
+        turn_number: turnNumber,
+        phone,
+        channel: input.channel,
+        tecnico_id: turnSession.tecnico_id,
+        candidate_state_at_turn: currentCandidateState,
+        inbound_text: text,
+        outbound_text: holdingReply,
+        tool_calls: null,
+        model: null,
+        prompt_sha: null,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        llm_iterations: 0,
+        latency_ms: Date.now() - startedAt,
+        errors: [
+          {
+            stage: "cost" as const,
+            code: "kill_switch",
+            message: `today=${todayCost} cap=${cap}`,
+          },
+        ],
+        escalated: false,
+        refused: false,
+        cost_killed: true,
+        finished_at: new Date().toISOString(),
+      });
+
+      return {
+        reply: holdingReply,
+        session_id: session.id,
+        tool_calls: [],
+        tool_calls_full: [],
+      };
+    }
+  }
+
+  // ---------- LLM turn ----------
   const recent = await sessions.recentMessages(session.id);
   const allButCurrent = recent.slice(0, -1);
   const history = toTurns(allButCurrent);
 
-  // TurnSession is ephemeral — lives only for this user turn. Tracks tecnico_id
-  // (populated by identify_user / register_tecnico) and tool-call count (Rules 1–3).
-  // Pre-populate tecnico_id + qualification_state from the DB so auth-gated tools
-  // work on turn 2+ without requiring the LLM to re-call identify_user every turn,
-  // AND so HR-driven state changes (approval, reject, needs_call) surface to the
-  // agent immediately instead of waiting for a stale identify_user response to
-  // age out of the conversation history.
-  const turnSession: TurnSession = createTurnSession();
-  let currentQualificationState: string | null = null;
-  {
-    const { data: existing } = await baseCtx.supabase
-      .from("tecnicos_extended")
-      .select("tecnico_id, qualification_state")
-      .eq("phone", phone)
-      .maybeSingle();
-    if (existing?.tecnico_id) {
-      turnSession.tecnico_id = existing.tecnico_id;
-      currentQualificationState = existing.qualification_state;
-    }
-  }
-
-  // Router-aware dispatcher: applies Rules 1–3 pre-dispatch and Rule 4 post-dispatch.
-  // This is the enforcement point — the LLM never bypasses it.
   const routedDispatch = async (
     ctx: ToolContext,
     name: string,
     args: Record<string, unknown>
   ): Promise<ToolResult<unknown>> => {
     const decision = preDispatch(turnSession, name, args);
-
     if (decision.kind === "refusal" || decision.kind === "terminal") {
       log.warn("router blocked tool call", {
         name,
@@ -219,8 +430,6 @@ export async function handleMessage(
       });
       return decision.result;
     }
-
-    // decision.kind === "allow" — use mutated args (Rule 2 applied)
     let result: ToolResult<unknown>;
     try {
       result = await dispatchTool(ctx, name, decision.args);
@@ -228,32 +437,25 @@ export async function handleMessage(
       const msg = e instanceof Error ? e.message : String(e);
       result = { ok: false, error: msg, code: "tool_threw" };
     }
-
-    // Update session from identify_user / register_tecnico outcomes.
     applyToolResultToSession(turnSession, name, result);
-
-    // Rule 4: truncate large result sets.
     return postDispatch(result);
   };
 
-  // Wrap the inbound message in <data source="tecnico"> before handing to the
-  // LLM. The system prompt instructs Claude to treat <data> content as data,
-  // never instructions — this is the enforcement point for the current turn.
-  //
-  // Prepend session context so identify_user always has the right phone to pass,
-  // AND so qualification_state (from a fresh DB read this turn) is authoritative
-  // over the cached identify_user response that may live in conversation history
-  // from N turns ago. The system prompt tells Toño to trust [session_state] over
-  // any older tool responses for current truth.
+  // Inject session context. mode + name guide Toño's three-case routing.
   const contextLines = [`[session_phone: ${phone}]`];
-  if (currentQualificationState) {
+  if (currentCandidateState) {
     contextLines.push(
-      `[session_state: qualification_state=${currentQualificationState}]`
+      `[session_state: candidate_state=${currentCandidateState}, profile_complete=${profileComplete}, mode=${routingMode}]`
     );
+  } else {
+    contextLines.push(`[session_state: candidate_state=null, mode=${routingMode}]`);
   }
+  if (nombreFromRow) contextLines.push(`[session_name: ${nombreFromRow}]`);
   const userMessage = `${contextLines.join("\n")}\n${wrapData(text, "tecnico")}`;
 
-  let turn: Awaited<ReturnType<typeof runTurn>>;
+  const errorsCollected: TurnError[] = [];
+  let turn: Awaited<ReturnType<typeof runTurn>> | null = null;
+  let modelUnavailable = false;
   try {
     turn = await runTurn({
       history,
@@ -263,32 +465,41 @@ export async function handleMessage(
     });
   } catch (e) {
     if (e instanceof ModelUnavailableError) {
-      // PRD §18: second Gemini failure → escalate to HR + return holding message.
+      modelUnavailable = true;
       log.error("model unavailable after retry — escalating to HR", { phone });
+      errorsCollected.push({
+        stage: "llm",
+        code: "model_unavailable",
+        message: e.message,
+      });
       try {
         await dispatchTool(toolCtx, "escalate_to_hr", {
           phone,
           reason: "model_unavailable",
-          context: `Toño no pudo procesar el mensaje de ${phone} por falla del modelo de IA (5xx tras retry).`,
+          context: `Toño no pudo procesar el mensaje de ${phone} por falla del modelo (5xx tras retry).`,
         });
       } catch (escErr) {
         log.error("escalate_to_hr also failed", {
           error: escErr instanceof Error ? escErr.message : String(escErr),
         });
+        errorsCollected.push({
+          stage: "tool",
+          code: "escalate_failed",
+          message: escErr instanceof Error ? escErr.message : String(escErr),
+        });
       }
-      const holdingReply = "Estoy con problemas técnicos, ya HR te escribe.";
-      return {
-        reply: holdingReply,
-        session_id: session.id,
-        tool_calls: [],
-        tool_calls_full: [],
-      };
+    } else {
+      throw e;
     }
-    throw e;
   }
 
-  // Persist any tool calls (as an assistant row) and responses (as a tool row).
-  if (turn.toolCallsMade.length > 0) {
+  const holdingReply = "Estoy con problemas técnicos, ya HR te escribe.";
+  const reply = modelUnavailable ? holdingReply : turn?.reply ?? "";
+
+  // Persist tool calls + responses + final reply BEFORE writing the turn row,
+  // so messages.tool_calls is the source of truth and turns.tool_calls is the
+  // lean operations projection.
+  if (turn && turn.toolCallsMade.length > 0) {
     const callsJson: Json = turn.toolCallsMade.map((t) => ({
       name: t.name,
       args: t.args as Json,
@@ -301,7 +512,7 @@ export async function handleMessage(
     });
     const responsesJson: Json = turn.toolCallsMade.map((t) => ({
       name: t.name,
-      response: (t.result as unknown) as Json,
+      response: t.result as unknown as Json,
     })) as Json;
     await sessions.recordMessage({
       sessionId: session.id,
@@ -309,21 +520,29 @@ export async function handleMessage(
       content: null,
       toolCalls: responsesJson,
     });
+
+    // Surface tool failures into errorsCollected so they land on the turn row.
+    for (const tc of turn.toolCallsMade) {
+      if (!tc.result.ok) {
+        errorsCollected.push({
+          stage: "tool",
+          code: tc.result.code ?? "unknown",
+          message: tc.result.error,
+        });
+      }
+    }
   }
 
-  // Persist the final assistant reply if any.
-  if (turn.reply) {
+  if (reply) {
     await sessions.recordMessage({
       sessionId: session.id,
       role: "assistant",
-      content: turn.reply,
+      content: reply,
     });
   }
   await sessions.touch(session.id);
 
-  // Persist the inbound JID so the outbound drainer can deliver to LID-mode
-  // accounts. No-op if no row exists for this phone yet (first-turn before
-  // register_tecnico, or dashboard channel where there's no JID).
+  // Persist inbound JID so outbound drainer can deliver to LID-mode accounts.
   if (input.jid) {
     const { error: jidErr } = await baseCtx.supabase
       .from("tecnicos_extended")
@@ -337,21 +556,79 @@ export async function handleMessage(
     }
   }
 
+  // Per-turn write to turns. UNIQUE (session_id, turn_number) makes this safe
+  // under retries; we use ON CONFLICT DO NOTHING via supabase upsert semantics
+  // by checking nextTurnNumber AFTER all message writes. If a concurrent retry
+  // increments the counter, the duplicate insert throws — caller sees the
+  // user reply either way.
+  const escalated = !!turn?.toolCallsMade.some(
+    (tc) => tc.name === "escalate_to_hr" && tc.result.ok
+  );
+  const refused = !!turn?.toolCallsMade.some(
+    (tc) =>
+      tc.name === "log_event" &&
+      ((tc.args as Record<string, unknown>)?.type as string | undefined) === "refused"
+  );
+
+  try {
+    const turnNumber = await nextTurnNumber(baseCtx.supabase, session.id);
+    const { error: turnErr } = await baseCtx.supabase.from("turns").insert({
+      session_id: session.id,
+      turn_number: turnNumber,
+      phone,
+      channel: input.channel,
+      tecnico_id: turnSession.tecnico_id,
+      candidate_state_at_turn: currentCandidateState,
+      inbound_text: text,
+      outbound_text: reply || null,
+      tool_calls:
+        turn && turn.toolCallsMade.length > 0
+          ? turn.toolCallsMade.map((tc) => ({
+              name: tc.name,
+              args: tc.args,
+              result_ok: tc.result.ok,
+              code: tc.result.ok ? undefined : tc.result.code,
+              latency_ms: tc.latency_ms,
+            }))
+          : null,
+      model: turn?.model ?? null,
+      prompt_sha: turn?.prompt_sha ?? null,
+      prompt_tokens: turn?.prompt_tokens ?? null,
+      completion_tokens: turn?.completion_tokens ?? null,
+      llm_iterations: turn?.iterations ?? null,
+      latency_ms: Date.now() - startedAt,
+      errors: errorsCollected.length > 0 ? errorsCollected : null,
+      escalated,
+      refused,
+      cost_killed: false,
+      finished_at: new Date().toISOString(),
+    });
+    if (turnErr) {
+      log.warn("turns insert failed (non-fatal)", {
+        session_id: session.id,
+        error: turnErr.message,
+      });
+    }
+  } catch (e) {
+    log.warn("turns insert threw (non-fatal)", {
+      session_id: session.id,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
+
   return {
-    reply: turn.reply,
+    reply,
     session_id: session.id,
-    tool_calls: turn.toolCallsMade.map((t) => ({
+    tool_calls: (turn?.toolCallsMade ?? []).map((t) => ({
       name: t.name,
       args: t.args,
       result_ok: t.result.ok,
     })),
-    tool_calls_full: turn.toolCallsMade,
+    tool_calls_full: turn?.toolCallsMade ?? [],
   };
 }
 
 // ---------------------------------------------------------------------------
-// EVAL-ONLY — thin re-export alias; handleMessage now always populates
-// tool_calls_full. handleMessageForEval is kept so qa/inject.ts can import
-// a clearly eval-named symbol. Production callers use handleMessage directly.
+// EVAL-ONLY — thin re-export alias.
 // ---------------------------------------------------------------------------
 export { handleMessage as handleMessageForEval };

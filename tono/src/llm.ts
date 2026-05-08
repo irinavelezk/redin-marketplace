@@ -74,8 +74,22 @@ export type ConversationTurn =
 
 export interface RunTurnResult {
   reply: string;
-  toolCallsMade: { name: string; args: Record<string, unknown>; result: ToolResult<unknown> }[];
+  toolCallsMade: {
+    name: string;
+    args: Record<string, unknown>;
+    result: ToolResult<unknown>;
+    /** Wall-clock time of the dispatch call. Surfaced into turns.tool_calls[i].latency_ms. */
+    latency_ms?: number;
+  }[];
   iterations: number;
+  /** Sum of input_tokens across all inner-loop iterations. Stream A: written to turns.prompt_tokens. */
+  prompt_tokens: number;
+  /** Sum of output_tokens across all inner-loop iterations. */
+  completion_tokens: number;
+  /** sha256 of TONO_SYSTEM_PROMPT at call time. Stream A: written to turns.prompt_sha. */
+  prompt_sha: string;
+  /** Anthropic model name. */
+  model: string;
 }
 
 // Convert Gemini-flavored TOOL_DECLARATIONS (UPPERCASE types) to Anthropic
@@ -234,6 +248,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
   const tools = toolsForAnthropic();
 
   const toolCallsMade: RunTurnResult["toolCallsMade"] = [];
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
 
   for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
     const t0 = Date.now();
@@ -261,6 +277,8 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     const latency_ms = Date.now() - t0;
 
     const usage = response.usage;
+    totalPromptTokens += usage.input_tokens;
+    totalCompletionTokens += usage.output_tokens;
     log.debug("llm usage", {
       in: usage.input_tokens,
       out: usage.output_tokens,
@@ -301,7 +319,15 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     if (toolUseBlocks.length === 0) {
       // No more tool calls — return model text.
       if (!responseText) log.warn("anthropic returned empty text", { iter });
-      return { reply: responseText, toolCallsMade, iterations: iter };
+      return {
+        reply: responseText,
+        toolCallsMade,
+        iterations: iter,
+        prompt_tokens: totalPromptTokens,
+        completion_tokens: totalCompletionTokens,
+        prompt_sha: TONO_PROMPT_SHA,
+        model: MODEL,
+      };
     }
 
     // Append the assistant turn (full content blocks: text + tool_use).
@@ -314,6 +340,7 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       const args = (tu.input ?? {}) as Record<string, unknown>;
       log.info("tool call", { name, args_keys: Object.keys(args) });
       let result: ToolResult<unknown>;
+      const dispatchT0 = Date.now();
       try {
         const dispatch = input.dispatcher ?? dispatchTool;
         result = await dispatch(input.toolCtx, name, args);
@@ -322,7 +349,12 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         log.error("tool threw", { name, error: msg });
         result = { ok: false, error: msg, code: "tool_threw" };
       }
-      toolCallsMade.push({ name, args, result });
+      toolCallsMade.push({
+        name,
+        args,
+        result,
+        latency_ms: Date.now() - dispatchT0,
+      });
       // Router signal: max_tools_reached terminates the loop.
       if (!result.ok && result.code === "max_tools_reached") {
         toolResultBlocks.push({
@@ -332,7 +364,15 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
           is_error: true,
         });
         messages.push({ role: "user", content: toolResultBlocks });
-        return { reply: "", toolCallsMade, iterations: iter };
+        return {
+          reply: "",
+          toolCallsMade,
+          iterations: iter,
+          prompt_tokens: totalPromptTokens,
+          completion_tokens: totalCompletionTokens,
+          prompt_sha: TONO_PROMPT_SHA,
+          model: MODEL,
+        };
       }
       toolResultBlocks.push({
         type: "tool_result",
@@ -349,5 +389,9 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
     reply: "Un momento, déjame revisar eso con el equipo y te respondo.",
     toolCallsMade,
     iterations: MAX_TOOL_ITERATIONS,
+    prompt_tokens: totalPromptTokens,
+    completion_tokens: totalCompletionTokens,
+    prompt_sha: TONO_PROMPT_SHA,
+    model: MODEL,
   };
 }

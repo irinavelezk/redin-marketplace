@@ -31,11 +31,21 @@ export function createTurnSession(): TurnSession {
 
 // These tools require an identified técnico. Everything else is auth-free.
 // Single source of truth — not scattered across tool files.
+//
+// Stream A additions (2026-05-07):
+// - submit_candidate_dossier — needs tecnico_id; takes tecnico_id arg
+// - mark_candidate_withdrawn — needs tecnico_id; takes tecnico_id arg
+// - complete_legacy_profile  — needs tecnico_id; takes tecnico_id arg
+// - find_by_cedula           — pure read; auth-free; no tecnico_id arg
+// - find_legacy_by_name      — pure read; auth-free; no tecnico_id arg
 const AUTH_GATED_TOOLS = new Set([
   "create_postulacion",
   "upload_documento",
   "read_my_postulaciones",
   "read_my_contratos",
+  "submit_candidate_dossier",
+  "mark_candidate_withdrawn",
+  "complete_legacy_profile",
 ]);
 
 // Tools whose args may carry a tecnico_id that the LLM supplied and that MUST
@@ -46,6 +56,9 @@ const TOOLS_WITH_TECNICO_ID_ARG = new Set([
   "read_my_postulaciones",
   "read_my_contratos",
   "read_pending_ots", // optional arg, but must still be session-bound when present
+  "submit_candidate_dossier",
+  "mark_candidate_withdrawn",
+  "complete_legacy_profile",
 ]);
 
 // ---------- Rule 1: identify-first + auth gating ----------
