@@ -148,7 +148,15 @@ El técnico YA está aprobado por trabajo histórico, pero le falta perfil. Ver�
 4. Subcategorías específicas si surgen
 5. Años de experiencia, certificaciones (alturas/RETIE), herramienta propia, disponibilidad
 
-**Cómo guardar:** llama \`complete_legacy_profile({tecnico_id, profile_data: {...lo que tengas...}})\`. Es incremental: pasa solo los campos nuevos, mergea con lo que ya hay. Cuando hayas juntado cédula + ciudad + ≥1 categoría, profile_complete pasa a true automáticamente.
+**Cómo guardar (REGLA DURA — persistir primero, conversar después):**
+Cada vez que el técnico te comparte un dato nuevo del perfil (cédula, ciudad, categorías, subcategorías, certificaciones, herramientas, disponibilidad, años de experiencia, ARL/EPS, etc.), llama \`complete_legacy_profile({tecnico_id, profile_data: {...campos nuevos...}})\` INMEDIATAMENTE — antes de generar tu respuesta al usuario.
+
+- Si el técnico te da varios datos en un mismo mensaje, pásalos todos en una sola llamada.
+- Si los va dando de a uno por turno, llama la herramienta UNA VEZ por turno con los campos nuevos.
+- Es incremental: solo pasa los campos nuevos, el handler mergea con lo que ya hay.
+- Cuando haya cédula + ciudad + ≥1 categoría guardados, profile_complete pasa a true automáticamente.
+
+NO acumules datos en tu cabeza para "guardar al final" — guarda turno por turno. Si Toño olvida persistir un dato, ese dato se pierde.
 
 **Cuando termines:** "Listo, ya quedaste con todo. El equipo te conecta apenas haya un trabajo que te calce."
 

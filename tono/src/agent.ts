@@ -494,7 +494,37 @@ export async function handleMessage(
   }
 
   const holdingReply = "Estoy con problemas técnicos, ya HR te escribe.";
-  const reply = modelUnavailable ? holdingReply : turn?.reply ?? "";
+  let reply = modelUnavailable ? holdingReply : turn?.reply ?? "";
+
+  // Empty-text safety net. If the model went silent after a tool call (e.g.
+  // it consumed the tool result and emitted no text on the follow-up
+  // iteration), substitute a deterministic fallback so an empty WhatsApp
+  // bubble never reaches the user. Two cases:
+  //   - at least one tool call succeeded -> warm "anotado" confirmation, the
+  //     conversation keeps moving.
+  //   - no tool succeeded (or no tools at all) -> reuse the same hold message
+  //     the max-iterations branch produces, signalling "let me check".
+  if (!modelUnavailable && reply.trim() === "" && turn) {
+    const anyOk = turn.toolCallsMade.some((tc) => tc.result.ok);
+    if (anyOk) {
+      reply = "Perfecto, anotado. ¿Algo más que quieras contarme?";
+      log.warn("substituted empty-text reply (post-tool)", {
+        phone,
+        session_id: session.id,
+        tools: turn.toolCallsMade.map((tc) => tc.name),
+      });
+    } else {
+      reply = "Un momento, déjame revisar eso con el equipo y te respondo.";
+      log.warn("substituted empty-text reply (no successful tool)", {
+        phone,
+        session_id: session.id,
+      });
+    }
+    errorsCollected.push({
+      stage: "llm",
+      code: "empty_reply_substituted",
+    });
+  }
 
   // Persist tool calls + responses + final reply BEFORE writing the turn row,
   // so messages.tool_calls is the source of truth and turns.tool_calls is the
