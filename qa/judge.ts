@@ -10,7 +10,9 @@
  * Temperature = 0 for consistency. Respects GEMINI_API_KEY env.
  */
 
-import { GoogleGenAI } from "@google/genai";
+// @google/genai is dynamically imported so --no-judge runs work even when the
+// package isn't installed (e.g. in the screening worktree, which only needs
+// the deterministic Stream A checks).
 import type { Seed } from "./seeds/schema.js";
 import type { InjectResult } from "./inject.js";
 
@@ -32,16 +34,33 @@ export type JudgeResult =
   | { status: "error"; reason: string };
 
 // ---------------------------------------------------------------------------
-// Client
+// Client (lazy)
 // ---------------------------------------------------------------------------
 
-let client: GoogleGenAI | null = null;
+interface GenAIClient {
+  models: {
+    generateContent: (req: {
+      model: string;
+      contents: { role: string; parts: { text: string }[] }[];
+      config: {
+        temperature: number;
+        maxOutputTokens: number;
+        thinkingConfig: { thinkingBudget: number };
+      };
+    }) => Promise<{ text?: string }>;
+  };
+}
 
-function getClient(): GoogleGenAI {
+let client: GenAIClient | null = null;
+
+async function getClient(): Promise<GenAIClient> {
   if (client) return client;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY is not set");
-  client = new GoogleGenAI({ apiKey });
+  // Dynamic import so --no-judge runs work without the dep installed.
+  const mod: { GoogleGenAI: new (opts: { apiKey: string }) => GenAIClient } =
+    await import("@google/genai" as string);
+  client = new mod.GoogleGenAI({ apiKey });
   return client;
 }
 
@@ -157,7 +176,13 @@ export async function judgeConversation(
   const transcript = buildTranscript(seed, turns);
   const prompt = buildPrompt(seed, transcript);
 
-  const ai = getClient();
+  let ai: GenAIClient;
+  try {
+    ai = await getClient();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { status: "error", reason: `Gemini client init failed: ${msg}` };
+  }
 
   let responseText: string;
   try {
