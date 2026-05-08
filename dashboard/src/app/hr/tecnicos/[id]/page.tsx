@@ -4,18 +4,20 @@
 // on /hr/qualification-queue and /hr/pipeline so each surface keeps a single job.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-import type { QualificationState } from "@redin/shared";
+import type { CandidateState } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
-const STATE_CLASS: Record<QualificationState, string> = {
+const STATE_CLASS: Record<CandidateState, string> = {
+  screening: "bg-slate-100 text-slate-700",
   pending: "bg-amber-100 text-amber-800",
-  needs_review: "bg-emerald-100 text-emerald-800",
-  needs_call: "bg-blue-100 text-blue-800",
-  qualified: "bg-slate-900 text-white",
+  needs_call: "bg-violet-100 text-violet-800",
+  approved: "bg-emerald-100 text-emerald-800",
   rejected: "bg-rose-100 text-rose-800",
+  withdrawn: "bg-slate-100 text-slate-500",
+  revoked: "bg-rose-200 text-rose-900",
 };
 
 function fmt(iso: string | null | undefined): string {
@@ -153,7 +155,7 @@ export default async function TecnicoDetailPage({
     .order("created_at", { ascending: false })
     .limit(100);
 
-  const stateClass = STATE_CLASS[tec.qualification_state] ?? "bg-slate-100 text-slate-700";
+  const stateClass = STATE_CLASS[tec.candidate_state] ?? "bg-slate-100 text-slate-700";
 
   return (
     <div className="space-y-6">
@@ -182,7 +184,7 @@ export default async function TecnicoDetailPage({
             )}
           </div>
           <span className={`inline-block rounded-full px-3 py-1 text-sm ${stateClass}`}>
-            {tec.qualification_state}
+            {tec.candidate_state}
           </span>
         </div>
       </div>

@@ -1,103 +1,21 @@
-// HR qualification queue — workers with qualification_state in (pending, needs_review).
-// Approve / reject / schedule call. Each action updates tecnicos_extended,
-// logs an eventos row, and notifies the worker via WhatsApp (outbound_messages).
+// HR qualification queue — workers with candidate_state in (pending, needs_call).
+// Approve / reject / schedule call. Each action posts to submitDecision in
+// @/lib/decisions, which writes a candidate_decisions row + flips state via
+// compare-and-set + enqueues WhatsApp + records the agreement metric.
+//
+// Commit 1 keeps the existing card layout + minimal queries; commit 2 rebuilds
+// the §3.5 UX (recommendation badge, raw confidence, why-expand, sort,
+// hr_notes thread). The dossier_id captured here flows into submitDecision so
+// the agreement signal is preserved as soon as the queue starts surfacing
+// dossier-bearing candidates.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-import { enqueueWhatsApp } from "@/lib/notify";
-import type { QualificationState } from "@redin/shared";
+import { submitDecision } from "@/lib/decisions";
+import type { CandidateState } from "@redin/shared";
 import { redirect } from "next/navigation";
-import { revalidatePath } from "next/cache";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
-
-// ---------------------------------------------------------------------------
-// Server actions
-// ---------------------------------------------------------------------------
-
-async function decide(formData: FormData) {
-  "use server";
-  const auth = serverClientBoundToCookies();
-  const { data: userData } = await auth.auth.getUser();
-  if (!userData.user) redirect("/login");
-  const hrEmail = userData.user.email ?? userData.user.id;
-
-  const tecnicoId = formData.get("tecnico_id");
-  const decision = formData.get("decision");
-  const notes = formData.get("notes");
-  if (typeof tecnicoId !== "string" || typeof decision !== "string") return;
-
-  const allowed: Record<string, QualificationState> = {
-    approve: "qualified",
-    reject: "rejected",
-    schedule_call: "needs_call",
-  };
-  const nextState = allowed[decision];
-  if (!nextState) return;
-
-  const supa = serviceClient();
-
-  const { data: prior } = await supa
-    .from("tecnicos_extended")
-    .select("tecnico_id, phone, qualification_state")
-    .eq("tecnico_id", tecnicoId)
-    .maybeSingle();
-  if (!prior) return;
-
-  const { error: updateErr } = await supa
-    .from("tecnicos_extended")
-    .update({ qualification_state: nextState })
-    .eq("tecnico_id", tecnicoId);
-  if (updateErr) {
-    console.error("qualification update failed", updateErr);
-    return;
-  }
-
-  await supa.from("eventos").insert({
-    type: "qualification_decided",
-    entity_id: tecnicoId,
-    actor: `hr:${hrEmail}`,
-    meta: {
-      from_state: prior.qualification_state,
-      to_state: nextState,
-      notes: typeof notes === "string" ? notes.trim() || null : null,
-    },
-  });
-
-  // Notify the worker. Body matches the agent's prompt vocabulary so the
-  // técnico's mental model stays consistent across surfaces.
-  const phone = prior.phone;
-  if (phone) {
-    let body: string | null = null;
-    if (nextState === "qualified") {
-      body =
-        "Listo — tu perfil quedó aprobado. Ya puedes postularte a los trabajos que te muestre. Cuando entre algo que te sirva, te aviso.";
-    } else if (nextState === "rejected") {
-      body =
-        "Hola, revisamos tu perfil y por ahora no podemos seguir adelante. Si quieres conversarlo, puedes responder y te contactamos.";
-    } else if (nextState === "needs_call") {
-      body =
-        "Queremos hacerte una llamada corta para conocerte mejor antes de avanzar. Pronto te contactamos para coordinar.";
-    }
-    if (body) {
-      await enqueueWhatsApp(supa, {
-        phone,
-        body,
-        meta: {
-          kind: "qualification_decided",
-          tecnico_id: tecnicoId,
-          to_state: nextState,
-        },
-      });
-    }
-  }
-
-  revalidatePath("/hr/qualification-queue");
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 interface RegisteredMeta {
   nombre?: string;
@@ -108,7 +26,6 @@ interface RegisteredMeta {
 
 interface ReviewMeta {
   summary?: string;
-  prior_state?: string;
 }
 
 function parseRegisteredMeta(meta: unknown): RegisteredMeta {
@@ -127,15 +44,14 @@ function parseRegisteredMeta(meta: unknown): RegisteredMeta {
 function parseReviewMeta(meta: unknown): ReviewMeta {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
   const m = meta as Record<string, unknown>;
-  const out: ReviewMeta = {};
-  if (typeof m.summary === "string") out.summary = m.summary;
-  if (typeof m.prior_state === "string") out.prior_state = m.prior_state;
-  return out;
+  if (typeof m.summary === "string") return { summary: m.summary };
+  return {};
 }
 
-// ---------------------------------------------------------------------------
-// Page
-// ---------------------------------------------------------------------------
+const CANDIDATE_STATE_CLASS: Partial<Record<CandidateState, string>> = {
+  pending: "text-amber-600",
+  needs_call: "text-violet-700 font-medium",
+};
 
 export default async function HrQualificationQueuePage() {
   const auth = serverClientBoundToCookies();
@@ -144,47 +60,64 @@ export default async function HrQualificationQueuePage() {
 
   const supa = serviceClient();
 
-  // pending      = Toño still gathering
-  // needs_review = ready for HR
-  // needs_call   = HR asked for a call; surface so HR can come back after the
-  //                call and approve / reject. (If we filtered this out, the
-  //                worker would silently disappear from the queue the moment
-  //                "Pedir llamada" gets clicked.)
+  // Per contract §3.5: queue surfaces candidate_state ∈ {pending, needs_call}
+  // only. screening = mid-conversation; approved/rejected/withdrawn/revoked =
+  // out of HR queue.
   const { data: tecnicos } = await supa
     .from("tecnicos_extended")
     .select("*")
-    .in("qualification_state", ["pending", "needs_review", "needs_call"])
+    .in("candidate_state", ["pending", "needs_call"])
     .order("onboarded_at", { ascending: false })
     .limit(100);
 
   const ids = (tecnicos ?? []).map((t) => t.tecnico_id);
-  const { data: regEvents } = ids.length
-    ? await supa
-        .from("eventos")
-        .select("entity_id, meta, created_at")
-        .eq("type", "tecnico_registered")
-        .in("entity_id", ids)
-        .order("created_at", { ascending: false })
-    : { data: [] };
-  const { data: reviewEvents } = ids.length
-    ? await supa
-        .from("eventos")
-        .select("entity_id, meta, created_at")
-        .eq("type", "qualification_review_requested")
-        .in("entity_id", ids)
-        .order("created_at", { ascending: false })
-    : { data: [] };
 
-  // Take the latest of each event type per tecnico.
+  // Fetch related context per tecnico in parallel.
+  const [regEventsRes, reviewEventsRes, dossiersRes] = ids.length
+    ? await Promise.all([
+        supa
+          .from("eventos")
+          .select("entity_id, meta, created_at")
+          .eq("type", "tecnico_registered")
+          .in("entity_id", ids)
+          .order("created_at", { ascending: false }),
+        supa
+          .from("eventos")
+          .select("entity_id, meta, created_at")
+          .eq("type", "qualification_review_requested")
+          .in("entity_id", ids)
+          .order("created_at", { ascending: false }),
+        supa
+          .from("candidate_dossiers")
+          .select("id, tecnico_id, tono_recommendation, tono_confidence, created_at")
+          .in("tecnico_id", ids)
+          .order("created_at", { ascending: false }),
+      ])
+    : [{ data: [] }, { data: [] }, { data: [] }];
+
   const regByTec = new Map<string, RegisteredMeta>();
-  for (const e of regEvents ?? []) {
+  for (const e of regEventsRes.data ?? []) {
     if (!e.entity_id || regByTec.has(e.entity_id)) continue;
     regByTec.set(e.entity_id, parseRegisteredMeta(e.meta));
   }
   const reviewByTec = new Map<string, ReviewMeta>();
-  for (const e of reviewEvents ?? []) {
+  for (const e of reviewEventsRes.data ?? []) {
     if (!e.entity_id || reviewByTec.has(e.entity_id)) continue;
     reviewByTec.set(e.entity_id, parseReviewMeta(e.meta));
+  }
+  // Latest dossier per tecnico_id (the one HR is reviewing — captured in the
+  // form so submitDecision can snapshot tono_recommendation_at_decision_time).
+  const latestDossierByTec = new Map<
+    string,
+    { id: string; tono_recommendation: string; tono_confidence: number }
+  >();
+  for (const d of dossiersRes.data ?? []) {
+    if (latestDossierByTec.has(d.tecnico_id)) continue;
+    latestDossierByTec.set(d.tecnico_id, {
+      id: d.id,
+      tono_recommendation: d.tono_recommendation,
+      tono_confidence: Number(d.tono_confidence),
+    });
   }
 
   return (
@@ -201,11 +134,9 @@ export default async function HrQualificationQueuePage() {
         </div>
       </div>
       <p className="text-sm text-slate-600">
-        Técnicos esperando aprobación. <strong>needs_review</strong> = Toño ya
-        recogió contexto suficiente. <strong>pending</strong> = aún en charla;
-        puedes aprobar tú si conoces al técnico de antes.{" "}
-        <strong>needs_call</strong> = pediste una llamada; vuelve aquí después
-        de hacerla y aprueba o rechaza.
+        Técnicos esperando aprobación. <strong>pending</strong> = Toño ya entregó
+        el dossier, listo para HR. <strong>needs_call</strong> = pediste una
+        llamada; vuelve aquí después de hacerla y aprueba o rechaza.
       </p>
 
       {(tecnicos ?? []).length === 0 ? (
@@ -217,12 +148,9 @@ export default async function HrQualificationQueuePage() {
           {(tecnicos ?? []).map((tec) => {
             const reg = regByTec.get(tec.tecnico_id);
             const review = reviewByTec.get(tec.tecnico_id);
+            const dossier = latestDossierByTec.get(tec.tecnico_id);
             const stateClass =
-              tec.qualification_state === "needs_review"
-                ? "text-emerald-600 font-medium"
-                : tec.qualification_state === "needs_call"
-                ? "text-blue-600 font-medium"
-                : "text-amber-600";
+              CANDIDATE_STATE_CLASS[tec.candidate_state] ?? "text-slate-600";
             return (
               <li key={tec.tecnico_id} className="card p-4">
                 <div className="flex items-start justify-between gap-4">
@@ -236,7 +164,7 @@ export default async function HrQualificationQueuePage() {
                     <div className="text-xs text-slate-500 mt-0.5">
                       {tec.phone} · onboarded{" "}
                       {new Date(tec.onboarded_at).toLocaleString("es-CO")} ·{" "}
-                      <span className={stateClass}>{tec.qualification_state}</span>
+                      <span className={stateClass}>{tec.candidate_state}</span>
                     </div>
                     {reg?.especialidades && reg.especialidades.length > 0 && (
                       <div className="text-sm text-slate-700 mt-2">
@@ -245,6 +173,15 @@ export default async function HrQualificationQueuePage() {
                         {reg.modalidad && (
                           <span className="text-slate-500"> · {reg.modalidad}</span>
                         )}
+                      </div>
+                    )}
+                    {dossier && (
+                      <div className="text-xs text-slate-600 mt-2">
+                        Toño sugiere{" "}
+                        <span className="font-medium text-slate-800">
+                          {dossier.tono_recommendation}
+                        </span>{" "}
+                        ({dossier.tono_confidence.toFixed(2)})
                       </div>
                     )}
                     {review?.summary && (
@@ -257,8 +194,10 @@ export default async function HrQualificationQueuePage() {
                     )}
                   </div>
                   <div className="flex flex-col gap-1 shrink-0">
-                    <form action={decide}>
+                    <form action={submitDecision}>
                       <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+                      <input type="hidden" name="prior_state" value={tec.candidate_state} />
+                      <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
                       <input type="hidden" name="decision" value="approve" />
                       <button
                         type="submit"
@@ -267,18 +206,38 @@ export default async function HrQualificationQueuePage() {
                         Aprobar
                       </button>
                     </form>
-                    <form action={decide}>
+                    {tec.candidate_state === "pending" && (
+                      <form action={submitDecision}>
+                        <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+                        <input type="hidden" name="prior_state" value={tec.candidate_state} />
+                        <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
+                        <input type="hidden" name="decision" value="schedule_call" />
+                        <button
+                          type="submit"
+                          className="text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-md px-3 py-1 w-32"
+                        >
+                          Pedir llamada
+                        </button>
+                      </form>
+                    )}
+                    {tec.candidate_state === "needs_call" && (
+                      <form action={submitDecision}>
+                        <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+                        <input type="hidden" name="prior_state" value={tec.candidate_state} />
+                        <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
+                        <input type="hidden" name="decision" value="unschedule_call" />
+                        <button
+                          type="submit"
+                          className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md px-3 py-1 w-32"
+                        >
+                          Quitar llamada
+                        </button>
+                      </form>
+                    )}
+                    <form action={submitDecision}>
                       <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
-                      <input type="hidden" name="decision" value="schedule_call" />
-                      <button
-                        type="submit"
-                        className="text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-md px-3 py-1 w-32"
-                      >
-                        Pedir llamada
-                      </button>
-                    </form>
-                    <form action={decide}>
-                      <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+                      <input type="hidden" name="prior_state" value={tec.candidate_state} />
+                      <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
                       <input type="hidden" name="decision" value="reject" />
                       <button
                         type="submit"

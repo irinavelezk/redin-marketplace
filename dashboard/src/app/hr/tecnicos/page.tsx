@@ -1,22 +1,24 @@
 // HR técnicos roster — every worker the system knows about, with their
-// qualification_state, postulaciones count, contratos firmados, and the
+// candidate_state, postulaciones count, contratos firmados, and the
 // timestamp of the last HR decision. Read-only; actions live on the
 // qualification-queue, pipeline, and evaluations pages so each surface keeps
 // a single purpose.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-import type { QualificationState } from "@redin/shared";
+import type { CandidateState } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
-const STATE_CLASS: Record<QualificationState, string> = {
+const STATE_CLASS: Record<CandidateState, string> = {
+  screening: "bg-slate-100 text-slate-700",
   pending: "bg-amber-100 text-amber-800",
-  needs_review: "bg-emerald-100 text-emerald-800",
-  needs_call: "bg-blue-100 text-blue-800",
-  qualified: "bg-slate-900 text-white",
+  needs_call: "bg-violet-100 text-violet-800",
+  approved: "bg-emerald-100 text-emerald-800",
   rejected: "bg-rose-100 text-rose-800",
+  withdrawn: "bg-slate-100 text-slate-500",
+  revoked: "bg-rose-200 text-rose-900",
 };
 
 function parseRegisteredMeta(meta: unknown): {
@@ -42,12 +44,26 @@ interface DecisionMeta {
   from_state?: string;
 }
 
+// Decision events come in two shapes:
+//   legacy 'qualification_decided': meta.to_state, meta.from_state
+//   new    'hr_decision':           meta.resulting_state, meta.prior_state
+// Normalize to the legacy keys so the table renderer below stays unchanged.
 function parseDecisionMeta(meta: unknown): DecisionMeta {
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
   const m = meta as Record<string, unknown>;
   return {
-    to_state: typeof m.to_state === "string" ? m.to_state : undefined,
-    from_state: typeof m.from_state === "string" ? m.from_state : undefined,
+    to_state:
+      typeof m.to_state === "string"
+        ? m.to_state
+        : typeof m.resulting_state === "string"
+        ? m.resulting_state
+        : undefined,
+    from_state:
+      typeof m.from_state === "string"
+        ? m.from_state
+        : typeof m.prior_state === "string"
+        ? m.prior_state
+        : undefined,
   };
 }
 
@@ -69,13 +85,15 @@ export default async function HrTecnicosPage({
     .order("onboarded_at", { ascending: false })
     .limit(200);
   if (
+    stateFilter === "screening" ||
     stateFilter === "pending" ||
-    stateFilter === "needs_review" ||
     stateFilter === "needs_call" ||
-    stateFilter === "qualified" ||
-    stateFilter === "rejected"
+    stateFilter === "approved" ||
+    stateFilter === "rejected" ||
+    stateFilter === "withdrawn" ||
+    stateFilter === "revoked"
   ) {
-    query = query.eq("qualification_state", stateFilter);
+    query = query.eq("candidate_state", stateFilter);
   }
   const { data: tecnicos } = await query;
 
@@ -97,12 +115,14 @@ export default async function HrTecnicosPage({
     regByTec.set(e.entity_id, parseRegisteredMeta(e.meta));
   }
 
-  // Latest qualification_decided event per worker (when + by whom)
+  // Latest HR decision event per worker (when + by whom). Read both the new
+  // 'hr_decision' name (commit 1+) and the legacy 'qualification_decided' so
+  // pre-merge rows remain visible without a separate migration.
   const { data: decisionEvents } = ids.length
     ? await supa
         .from("eventos")
         .select("entity_id, actor, meta, created_at")
-        .eq("type", "qualification_decided")
+        .in("type", ["hr_decision", "qualification_decided"])
         .in("entity_id", ids)
         .order("created_at", { ascending: false })
     : { data: [] };
@@ -152,11 +172,13 @@ export default async function HrTecnicosPage({
 
   const filterChips: { label: string; value: string | undefined }[] = [
     { label: "Todos", value: undefined },
+    { label: "En charla", value: "screening" },
     { label: "Pendientes", value: "pending" },
-    { label: "En revisión", value: "needs_review" },
     { label: "Llamada pendiente", value: "needs_call" },
-    { label: "Aprobados", value: "qualified" },
+    { label: "Aprobados", value: "approved" },
     { label: "Rechazados", value: "rejected" },
+    { label: "Retirados", value: "withdrawn" },
+    { label: "Revocados", value: "revoked" },
   ];
 
   return (
@@ -231,7 +253,7 @@ export default async function HrTecnicosPage({
                 const reg = regByTec.get(t.tecnico_id);
                 const dec = lastDecisionByTec.get(t.tecnico_id);
                 const stateClass =
-                  STATE_CLASS[t.qualification_state] ?? "bg-slate-100 text-slate-700";
+                  STATE_CLASS[t.candidate_state] ?? "bg-slate-100 text-slate-700";
                 return (
                   <tr key={t.tecnico_id} className="border-t border-slate-100">
                     <td className="px-3 py-2">
@@ -256,7 +278,7 @@ export default async function HrTecnicosPage({
                       <span
                         className={`inline-block rounded-full px-2 py-0.5 text-xs ${stateClass}`}
                       >
-                        {t.qualification_state}
+                        {t.candidate_state}
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-slate-700">
