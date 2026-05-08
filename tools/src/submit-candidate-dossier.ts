@@ -268,9 +268,11 @@ async function performCedulaMerge(
   const canonical = agentOlder ? agentRow : collidingRow;
   const dropped = agentOlder ? collidingRow : agentRow;
 
+  // Tables that hold a real tecnico_id reference column. Sessions and
+  // messages are phone-keyed and migrate implicitly with the phone update
+  // on the canonical row, so they're not in this list.
   const referenceTables = [
     "postulaciones",
-    "messages",
     "eventos",
     "qualification_calls",
     "tecnico_evaluations",
@@ -282,14 +284,14 @@ async function performCedulaMerge(
   ] as const;
 
   for (const t of referenceTables) {
-    const column =
-      t === "eventos" ? "entity_id" : "tecnico_id";
+    const column = t === "eventos" ? "entity_id" : "tecnico_id";
     const { error } = await ctx.supabase
       .from(t as any)
       .update({ [column]: canonical.tecnico_id })
       .eq(column, dropped.tecnico_id);
     if (error) {
-      // Some tables may not have the column or may be empty — log but continue.
+      // Defensive: log but continue. The CASCADE on FK ensures the
+      // subsequent DELETE of the dropped row won't hit a violation.
       ctx.logger.warn("merge: reference update soft-failed", {
         table: t,
         error: error.message,
@@ -297,13 +299,13 @@ async function performCedulaMerge(
     }
   }
 
-  // Sessions: phone-keyed in this codebase, but also has tecnico_id-related
-  // joins via messages. Sessions table itself has phone, not tecnico_id, so
-  // we update its phone to canonical.phone (which already points there).
-  // Already handled by canonical.phone — nothing to do.
-
-  // Update canonical row with the agent's current phone + last_jid (so the
-  // worker can keep messaging from this number).
+  // The canonical row's phone needs to land on the new (live) phone the worker
+  // is messaging from, but tecnicos_extended.phone is UNIQUE — both rows
+  // currently hold phones, so we must DELETE the duplicate before UPDATING
+  // canonical's phone, otherwise the UNIQUE constraint trips. Order:
+  //   1. References moved (above)
+  //   2. DELETE dropped row (frees its phone for canonical to take)
+  //   3. UPDATE canonical with new phone + state-flip patch
   const newPhone = (agentOlder ? collidingRow : agentRow).phone;
   const newJid = (agentOlder ? collidingRow : agentRow).last_jid;
   const canonicalPatch: Partial<{
@@ -324,19 +326,18 @@ async function performCedulaMerge(
     resumedFromWithdrawn = true;
   }
 
-  const { error: updErr } = await ctx.supabase
-    .from("tecnicos_extended")
-    .update(canonicalPatch)
-    .eq("tecnico_id", canonical.tecnico_id);
-  if (updErr) throw new Error(`canonical update failed: ${updErr.message}`);
-
-  // Drop the duplicate row (cascade dropped already-rerouted references via
-  // FK ON DELETE CASCADE — but we already moved them; this is the empty row).
+  // Drop dropped row first to release its phone from the UNIQUE index.
   const { error: delErr } = await ctx.supabase
     .from("tecnicos_extended")
     .delete()
     .eq("tecnico_id", dropped.tecnico_id);
   if (delErr) throw new Error(`drop merged row failed: ${delErr.message}`);
+
+  const { error: updErr } = await ctx.supabase
+    .from("tecnicos_extended")
+    .update(canonicalPatch)
+    .eq("tecnico_id", canonical.tecnico_id);
+  if (updErr) throw new Error(`canonical update failed: ${updErr.message}`);
 
   await recordEvent(ctx, {
     type: "cedula_merged",

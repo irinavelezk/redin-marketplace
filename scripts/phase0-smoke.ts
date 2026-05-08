@@ -53,7 +53,11 @@ async function main() {
 
   try {
     // 0. Seed a fake OT in ots_mirror so tools can resolve it.
+    // read_pending_ots only surfaces OTs in state '4. Coordinar – Listo para
+    // ejecutar' (commit c4e67a8 / 'show only state-4 OTs') — seed the smoke
+    // OT in that state so the read-side check finds it.
     {
+      const offerable = "4. Coordinar – Listo para ejecutar";
       const { error } = await supabase.from("ots_mirror").insert({
         row_id: TEST_OT_ID,
         data: {
@@ -61,11 +65,11 @@ async function main() {
           Descripcion: `SMOKE TEST — ${RUN_ID} — ignore`,
           Ciudad: "Cali",
           Categoria: "Eléctrico",
-          Estado: "01. Solicitud / Lead",
+          Estado: offerable,
         },
         ciudad: "Cali",
         especialidad: "Eléctrico",
-        estado: "01. Solicitud / Lead",
+        estado: offerable,
       });
       checks.push({ name: "seed OT mirror", ok: !error, detail: error?.message });
       if (error) throw new Error(`seed failed: ${error.message}`);
@@ -141,6 +145,19 @@ async function main() {
       const r = await identifyUser(ctx, { phone: PHONE_A });
       const ok = r.ok && r.data.found === true && r.data.tecnico.tecnico_id === tecnicoIdA;
       checks.push({ name: "identify_user (found)", ok, detail: ok ? undefined : JSON.stringify(r) });
+    }
+
+    // 5a. Force-promote A and B to candidate_state='approved' so create_postulacion
+    // can proceed. The smoke verifies the contract pipeline (apply -> shortlist
+    // -> contract); the dossier flow has its own coverage in the eval suite.
+    // Migration 007 made workers default to 'screening' until HR approves; bypass
+    // for testing only.
+    {
+      const { error } = await supabase
+        .from("tecnicos_extended")
+        .update({ candidate_state: "approved" })
+        .in("tecnico_id", [tecnicoIdA, tecnicoIdB]);
+      if (error) throw new Error(`approve test workers failed: ${error.message}`);
     }
 
     // 6. read_pending_ots — our seeded OT should appear
