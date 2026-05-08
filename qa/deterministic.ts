@@ -1,17 +1,31 @@
 /**
  * qa/deterministic.ts — Layer 1 checks for the S07 eval harness.
  *
- * Pure functions — no I/O. Takes a Seed + the InjectResult array from the
- * conversation and returns a structured pass/fail with evidence.
+ * Mostly pure. Takes a Seed + the InjectResult array from the conversation
+ * and returns a structured pass/fail with evidence. Stream A added DB-state
+ * assertions that need a Supabase read AFTER the conversation finishes;
+ * those live in `deterministicCheckWithDbState` (the runner calls that
+ * variant when the seed declares any of expected_db_state, expected_dossier,
+ * expected_eventos).
  *
  * Checks (in order):
- *   1. Tool sequence  — must_be_first, args_contain, must_NOT_be_called
+ *   1. Tool sequence  — must_be_first, args_contain, result_code,
+ *                       must_NOT_be_called
  *   2. Response assertions — contains / does_not_contain / cedula / regex
- *   3. Refusal check  — if expected_refusal, eventos must contain "refused" with policy_line
- *   4. Escalation check — if expected_escalation, escalate_to_hr must appear in tool calls
- *   5. Grounding check — digit sequences in reply must appear in last tool result
+ *   3. Refusal check  — if expected_refusal, eventos must contain "refused"
+ *                        with policy_line
+ *   4. Escalation check — if expected_escalation, escalate_to_hr must appear
+ *                          in tool calls (and reason matches when given)
+ *   5. Grounding check — digit sequences in reply must appear in any tool
+ *                         result of the same turn
+ *   6. (Stream A, async) DB state — candidate_state, profile_complete, cedula
+ *                                    presence, withdrawal_reason, etc.
+ *   7. (Stream A, async) Dossier — candidate_dossiers row written + recommendation
+ *                                   triplet sanity
+ *   8. (Stream A, async) Eventos — required types + meta partial-match
  */
 
+import type { ServerClient } from "@redin/shared";
 import type { Seed } from "./seeds/schema.js";
 import type { InjectResult } from "./inject.js";
 
@@ -152,8 +166,40 @@ function checkToolSequence(
       }
     }
 
+    // result_code — assert the FIRST call to this tool returned the expected
+    // typed outcome code (e.g. submit_candidate_dossier -> "submitted").
+    if (assertion.result_code !== undefined) {
+      const matchingCall = calls.find((c) => c.name === assertion.tool);
+      if (!matchingCall) {
+        failures.push({
+          assertion: `tool.result_code`,
+          expected: `${assertion.tool} called with result code "${assertion.result_code}"`,
+          observed: `${assertion.tool} was never called`,
+          evidence: `tool calls: [${callNames.join(", ")}]`,
+        });
+      } else {
+        const r = matchingCall.result;
+        const observedCode = r.ok
+          ? (r.data as { code?: string } | null)?.code ?? "(ok, no code)"
+          : r.code ?? "(no code)";
+        if (observedCode !== assertion.result_code) {
+          failures.push({
+            assertion: `tool.result_code`,
+            expected: `${assertion.tool} result.code === "${assertion.result_code}"`,
+            observed: `result.code === "${observedCode}"`,
+            evidence: JSON.stringify(matchingCall.result).slice(0, 200),
+          });
+        }
+      }
+    }
+
     // Tool must exist in calls (if no other flag set but tool is listed)
-    if (!assertion.must_be_first && !assertion.args_contain && !assertion.must_NOT_be_called) {
+    if (
+      !assertion.must_be_first &&
+      !assertion.args_contain &&
+      !assertion.result_code &&
+      !assertion.must_NOT_be_called
+    ) {
       if (!callNames.includes(assertion.tool)) {
         failures.push({
           assertion: `tool.called`,
@@ -283,18 +329,36 @@ function checkEscalation(
   if (!seed.expected_escalation) return [];
 
   const failures: DeterministicFailure[] = [];
-  const { must_call_escalate_to_hr } = seed.expected_escalation;
+  const { must_call_escalate_to_hr, reason } = seed.expected_escalation;
 
   if (must_call_escalate_to_hr) {
     const calls = allToolCalls(turns);
-    const escalated = calls.some((c) => c.name === "escalate_to_hr");
-    if (!escalated) {
+    const escalations = calls.filter((c) => c.name === "escalate_to_hr");
+    if (escalations.length === 0) {
       failures.push({
         assertion: "expected_escalation.must_call_escalate_to_hr",
         expected: "escalate_to_hr must be called",
         observed: `tool calls: [${calls.map((c) => c.name).join(", ")}]`,
         evidence: "no escalate_to_hr in tool trace",
       });
+    } else if (reason !== undefined) {
+      // Match the assertion's reason against the tool's args.reason as a
+      // case-insensitive substring (Tono may phrase it slightly differently
+      // turn-to-turn).
+      const matched = escalations.some((c) => {
+        const r = (c.args as { reason?: unknown } | undefined)?.reason;
+        return typeof r === "string" && r.toLowerCase().includes(reason.toLowerCase());
+      });
+      if (!matched) {
+        failures.push({
+          assertion: "expected_escalation.reason",
+          expected: `escalate_to_hr called with reason containing "${reason}"`,
+          observed: escalations
+            .map((c) => `reason="${(c.args as { reason?: unknown }).reason}"`)
+            .join(" | "),
+          evidence: "no escalate_to_hr call had the expected reason substring",
+        });
+      }
     }
   }
 
@@ -361,5 +425,326 @@ export function deterministicCheck(
     seed_name: seed.name,
     passed: failures.length === 0,
     failures,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stream A — async DB state checks (require Supabase reads)
+// ---------------------------------------------------------------------------
+
+/** Deep-partial match for eventos meta. Same semantics as argsContain. */
+function metaContains(
+  actual: Record<string, unknown>,
+  expected: Record<string, unknown>
+): boolean {
+  return argsContain(actual, expected);
+}
+
+async function checkDbState(
+  seed: Seed,
+  testPhone: string,
+  turnStart: Date,
+  supabase: ServerClient
+): Promise<DeterministicFailure[]> {
+  if (!seed.expected_db_state) return [];
+
+  const failures: DeterministicFailure[] = [];
+  const exp = seed.expected_db_state;
+
+  const { data: row, error } = await supabase
+    .from("tecnicos_extended")
+    .select(
+      "tecnico_id, candidate_state, profile_complete, cedula, withdrawal_reason, import_source, enrichment_data"
+    )
+    .eq("phone", testPhone)
+    .maybeSingle();
+  if (error) {
+    failures.push({
+      assertion: "expected_db_state.read",
+      expected: "tecnicos_extended row readable",
+      observed: error.message,
+      evidence: `phone=${testPhone}`,
+    });
+    return failures;
+  }
+  if (!row) {
+    failures.push({
+      assertion: "expected_db_state.row_exists",
+      expected: "tecnicos_extended row should exist for testPhone",
+      observed: "no row found",
+      evidence: `phone=${testPhone}`,
+    });
+    return failures;
+  }
+
+  if (exp.candidate_state !== undefined && row.candidate_state !== exp.candidate_state) {
+    failures.push({
+      assertion: "expected_db_state.candidate_state",
+      expected: exp.candidate_state,
+      observed: String(row.candidate_state),
+      evidence: `phone=${testPhone}`,
+    });
+  }
+  if (exp.profile_complete !== undefined && row.profile_complete !== exp.profile_complete) {
+    failures.push({
+      assertion: "expected_db_state.profile_complete",
+      expected: String(exp.profile_complete),
+      observed: String(row.profile_complete),
+      evidence: `phone=${testPhone}`,
+    });
+  }
+  if (exp.cedula_present !== undefined) {
+    const present = row.cedula !== null && row.cedula !== undefined;
+    if (present !== exp.cedula_present) {
+      failures.push({
+        assertion: "expected_db_state.cedula_present",
+        expected: String(exp.cedula_present),
+        observed: present ? "cedula set" : "cedula NULL",
+        evidence: `phone=${testPhone}`,
+      });
+    }
+  }
+  if (exp.withdrawal_reason !== undefined && row.withdrawal_reason !== exp.withdrawal_reason) {
+    failures.push({
+      assertion: "expected_db_state.withdrawal_reason",
+      expected: exp.withdrawal_reason,
+      observed: String(row.withdrawal_reason),
+      evidence: `phone=${testPhone}`,
+    });
+  }
+  if (exp.import_source !== undefined && row.import_source !== exp.import_source) {
+    failures.push({
+      assertion: "expected_db_state.import_source",
+      expected: exp.import_source,
+      observed: String(row.import_source),
+      evidence: `phone=${testPhone}`,
+    });
+  }
+  if (exp.enrichment_data_has_keys !== undefined) {
+    const data =
+      row.enrichment_data && typeof row.enrichment_data === "object"
+        ? (row.enrichment_data as Record<string, unknown>)
+        : null;
+    const present = data ? Object.keys(data) : [];
+    const missing = exp.enrichment_data_has_keys.filter((k) => !present.includes(k));
+    if (missing.length > 0) {
+      failures.push({
+        assertion: "expected_db_state.enrichment_data_has_keys",
+        expected: `keys [${exp.enrichment_data_has_keys.join(", ")}]`,
+        observed: `keys [${present.join(", ")}]`,
+        evidence: `missing: [${missing.join(", ")}]`,
+      });
+    }
+  }
+
+  return failures;
+  // turnStart is unused for db_state but kept in signature for symmetry with
+  // checkEventosWritten / checkDossierWritten which DO need a time floor.
+  void turnStart;
+}
+
+async function checkDossierWritten(
+  seed: Seed,
+  testPhone: string,
+  turnStart: Date,
+  supabase: ServerClient
+): Promise<DeterministicFailure[]> {
+  if (!seed.expected_dossier) return [];
+
+  const failures: DeterministicFailure[] = [];
+  const exp = seed.expected_dossier;
+
+  const { data: tec } = await supabase
+    .from("tecnicos_extended")
+    .select("tecnico_id")
+    .eq("phone", testPhone)
+    .maybeSingle();
+  const tecnicoId = tec?.tecnico_id;
+
+  if (!tecnicoId) {
+    if (exp.must_be_written) {
+      failures.push({
+        assertion: "expected_dossier.tecnico_id",
+        expected: "row in tecnicos_extended for testPhone",
+        observed: "no row",
+        evidence: `phone=${testPhone}`,
+      });
+    }
+    return failures;
+  }
+
+  const { data: dossiers, error } = await supabase
+    .from("candidate_dossiers")
+    .select("id, tono_recommendation, tono_confidence, tono_reasoning, created_at")
+    .eq("tecnico_id", tecnicoId)
+    .gte("created_at", turnStart.toISOString())
+    .order("created_at", { ascending: false });
+  if (error) {
+    failures.push({
+      assertion: "expected_dossier.read",
+      expected: "candidate_dossiers readable",
+      observed: error.message,
+      evidence: `tecnico_id=${tecnicoId}`,
+    });
+    return failures;
+  }
+
+  if (exp.must_be_written) {
+    if (!dossiers || dossiers.length === 0) {
+      failures.push({
+        assertion: "expected_dossier.must_be_written",
+        expected: "at least one candidate_dossiers row inserted during conversation",
+        observed: "no rows",
+        evidence: `tecnico_id=${tecnicoId}`,
+      });
+      return failures;
+    }
+    const latest = dossiers[0]!;
+    if (
+      exp.tono_recommendation_in &&
+      !exp.tono_recommendation_in.includes(latest.tono_recommendation as never)
+    ) {
+      failures.push({
+        assertion: "expected_dossier.tono_recommendation_in",
+        expected: `one of [${exp.tono_recommendation_in.join(", ")}]`,
+        observed: String(latest.tono_recommendation),
+        evidence: `dossier_id=${latest.id}`,
+      });
+    }
+    if (
+      exp.tono_confidence_min !== undefined &&
+      Number(latest.tono_confidence) < exp.tono_confidence_min
+    ) {
+      failures.push({
+        assertion: "expected_dossier.tono_confidence_min",
+        expected: `>= ${exp.tono_confidence_min}`,
+        observed: String(latest.tono_confidence),
+        evidence: `dossier_id=${latest.id}`,
+      });
+    }
+    if (
+      exp.tono_reasoning_min_length !== undefined &&
+      String(latest.tono_reasoning ?? "").length < exp.tono_reasoning_min_length
+    ) {
+      failures.push({
+        assertion: "expected_dossier.tono_reasoning_min_length",
+        expected: `>= ${exp.tono_reasoning_min_length} chars`,
+        observed: `${String(latest.tono_reasoning ?? "").length} chars`,
+        evidence: `dossier_id=${latest.id}`,
+      });
+    }
+  } else {
+    if (dossiers && dossiers.length > 0) {
+      failures.push({
+        assertion: "expected_dossier.must_be_written=false",
+        expected: "no candidate_dossiers row written",
+        observed: `${dossiers.length} row(s) found`,
+        evidence: `tecnico_id=${tecnicoId}`,
+      });
+    }
+  }
+
+  return failures;
+}
+
+async function checkEventosWritten(
+  seed: Seed,
+  testPhone: string,
+  turnStart: Date,
+  supabase: ServerClient
+): Promise<DeterministicFailure[]> {
+  if (!seed.expected_eventos || seed.expected_eventos.length === 0) return [];
+
+  const failures: DeterministicFailure[] = [];
+
+  // Pull all eventos written since turnStart for either entity_id matching the
+  // worker's tecnico_id OR with no entity_id (e.g. cost_kill_switch_triggered
+  // is sometimes scoped to session_id, escalate_to_hr to phone, etc.).
+  const { data: tec } = await supabase
+    .from("tecnicos_extended")
+    .select("tecnico_id")
+    .eq("phone", testPhone)
+    .maybeSingle();
+  const tecnicoId = tec?.tecnico_id;
+
+  const { data: rows, error } = await supabase
+    .from("eventos")
+    .select("type, entity_id, meta, created_at")
+    .gte("created_at", turnStart.toISOString())
+    .order("created_at", { ascending: true });
+  if (error) {
+    failures.push({
+      assertion: "expected_eventos.read",
+      expected: "eventos readable",
+      observed: error.message,
+      evidence: `phone=${testPhone}`,
+    });
+    return failures;
+  }
+
+  // Scope to events that mention this worker (entity_id match OR meta.phone
+  // match OR meta.tecnico_id match) — keeps the matcher tight under
+  // concurrent test runs.
+  const scoped = (rows ?? []).filter((r) => {
+    if (tecnicoId && r.entity_id === tecnicoId) return true;
+    const m = (r.meta as Record<string, unknown> | null) ?? null;
+    if (m && (m["phone"] === testPhone || m["tecnico_id"] === tecnicoId)) return true;
+    return false;
+  });
+
+  for (const want of seed.expected_eventos) {
+    const matches = scoped.filter((r) => r.type === want.type);
+    if (matches.length === 0) {
+      failures.push({
+        assertion: "expected_eventos.type",
+        expected: `eventos type="${want.type}" for this worker`,
+        observed: `types: [${scoped.map((s) => s.type).join(", ")}]`,
+        evidence: `phone=${testPhone} tecnico_id=${tecnicoId ?? "(none)"}`,
+      });
+      continue;
+    }
+    if (want.meta_contains) {
+      const matched = matches.some((m) => {
+        const meta = (m.meta as Record<string, unknown> | null) ?? {};
+        return metaContains(meta, want.meta_contains!);
+      });
+      if (!matched) {
+        failures.push({
+          assertion: "expected_eventos.meta_contains",
+          expected: `eventos type="${want.type}" with meta containing ${JSON.stringify(want.meta_contains)}`,
+          observed: matches
+            .map((m) => JSON.stringify(m.meta).slice(0, 100))
+            .join(" | "),
+          evidence: `phone=${testPhone}`,
+        });
+      }
+    }
+  }
+
+  return failures;
+}
+
+/**
+ * Stream A: full deterministic check including post-conversation DB reads.
+ * Use this when the seed declares any of expected_db_state, expected_dossier,
+ * or expected_eventos. Otherwise the synchronous deterministicCheck is fine.
+ */
+export async function deterministicCheckWithDbState(
+  seed: Seed,
+  turns: InjectResult[],
+  testPhone: string,
+  turnStart: Date,
+  supabase: ServerClient
+): Promise<DeterministicResult> {
+  const sync = deterministicCheck(seed, turns);
+  const asyncFailures = [
+    ...(await checkDbState(seed, testPhone, turnStart, supabase)),
+    ...(await checkDossierWritten(seed, testPhone, turnStart, supabase)),
+    ...(await checkEventosWritten(seed, testPhone, turnStart, supabase)),
+  ];
+  return {
+    seed_name: seed.name,
+    passed: sync.failures.length + asyncFailures.length === 0,
+    failures: [...sync.failures, ...asyncFailures],
   };
 }

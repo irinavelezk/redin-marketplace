@@ -44,6 +44,281 @@ async function seedTecnicoNotRegistered(
   return { tecnico_id: null, ot_ids: [] };
 }
 
+// ---------------------------------------------------------------------------
+// Stream A fixtures
+// ---------------------------------------------------------------------------
+
+// Cedulas live in a TEST_-reserved range so they never collide with real data.
+// The trailing 6 digits of the testPhone yield a unique cedula per fixture.
+// Exported so qa/runner.ts can substitute ${cedula} in user_utterances.
+export function testCedulaFor(testPhone: string): string {
+  return `99${testPhone.slice(-7).padStart(7, "0")}`;
+}
+
+async function seedTecnicoLegacyApprovedIncomplete(
+  testPhone: string
+): Promise<FixtureRefs> {
+  const supabase = createServerClient();
+  const tecnico_id = `TEST_legacy_inc_${testPhone.slice(-6)}`;
+  const nombre = `Legacy Worker ${testPhone.slice(-3)}`;
+
+  const { error: extErr } = await supabase.from("tecnicos_extended").upsert({
+    tecnico_id,
+    phone: testPhone,
+    estado: "activo",
+    candidate_state: "approved",
+    profile_complete: false,
+    appsheet_row_id: `TEST_AS_${tecnico_id}`,
+    legacy_popularidad: 5,
+    legacy_activity_count: 5,
+    imported_at: new Date().toISOString(),
+    import_source: "appsheet_legacy_bootstrap",
+    source: "appsheet_legacy_bootstrap",
+  });
+  if (extErr)
+    throw new Error(`fixture legacy_approved_incomplete: ${extErr.message}`);
+
+  // Bootstrap event so loadDisplayName can greet by name.
+  await supabase
+    .from("eventos")
+    .delete()
+    .eq("type", "tecnico_legacy_bootstrap")
+    .eq("entity_id", tecnico_id);
+  const { error: evtErr } = await supabase.from("eventos").insert({
+    type: "tecnico_legacy_bootstrap",
+    entity_id: tecnico_id,
+    actor: "system:legacy_bootstrap",
+    meta: {
+      nombre,
+      email: null,
+      telefono: testPhone,
+      popularidad: 5,
+      activity_count: 5,
+      appsheet_row_id: `TEST_AS_${tecnico_id}`,
+    },
+  });
+  if (evtErr) throw new Error(`fixture legacy bootstrap event: ${evtErr.message}`);
+
+  // Synthetic candidate_decisions row mirrors what the bootstrap script writes.
+  await supabase
+    .from("candidate_decisions")
+    .delete()
+    .eq("tecnico_id", tecnico_id)
+    .eq("decided_by", "system:legacy_bootstrap");
+  await supabase.from("candidate_decisions").insert({
+    tecnico_id,
+    dossier_id: null,
+    decision: "approve",
+    resulting_state: "approved",
+    prior_state: "screening",
+    tono_recommendation_at_decision_time: null,
+    agreed_with_tono: null,
+    hr_reasoning:
+      "TEST fixture — legacy bootstrap. Eligible by historical work record.",
+    decided_by: "system:legacy_bootstrap",
+  });
+
+  return { tecnico_id, ot_ids: [] };
+}
+
+// Same as tecnico_legacy_approved_incomplete but the row lives on a sister
+// phone, leaving testPhone fresh. Used by Test G to verify the
+// find_legacy_by_name -> escalate_to_hr reconciliation path: the conversation
+// happens on a brand new phone, but the worker's name matches a legacy
+// worker who was bootstrapped under another number.
+async function seedTecnicoLegacyIncompleteSisterPhone(
+  testPhone: string
+): Promise<FixtureRefs> {
+  const supabase = createServerClient();
+  const tecnico_id = `TEST_legacy_sis_${testPhone.slice(-6)}`;
+  // Use a stable, recognizable name — the test seed will reproduce it
+  // verbatim (or with a 1-letter typo for the fuzzy path).
+  const nombre = legacyNombreFor(testPhone);
+  const sisterPhone = sisterPhoneFor(testPhone);
+
+  const { error: extErr } = await supabase.from("tecnicos_extended").upsert({
+    tecnico_id,
+    phone: sisterPhone,
+    estado: "activo",
+    candidate_state: "approved",
+    profile_complete: false,
+    appsheet_row_id: `TEST_AS_${tecnico_id}`,
+    legacy_popularidad: 7,
+    legacy_activity_count: 7,
+    imported_at: new Date().toISOString(),
+    import_source: "appsheet_legacy_bootstrap",
+    source: "appsheet_legacy_bootstrap",
+  });
+  if (extErr)
+    throw new Error(`fixture legacy_incomplete_sister_phone: ${extErr.message}`);
+
+  await supabase
+    .from("eventos")
+    .delete()
+    .eq("type", "tecnico_legacy_bootstrap")
+    .eq("entity_id", tecnico_id);
+  await supabase.from("eventos").insert({
+    type: "tecnico_legacy_bootstrap",
+    entity_id: tecnico_id,
+    actor: "system:legacy_bootstrap",
+    meta: {
+      nombre,
+      email: null,
+      telefono: sisterPhone,
+      popularidad: 7,
+      activity_count: 7,
+      appsheet_row_id: `TEST_AS_${tecnico_id}`,
+    },
+  });
+
+  return { tecnico_id, ot_ids: [] };
+}
+
+async function seedTecnicoLegacyApprovedComplete(
+  testPhone: string
+): Promise<FixtureRefs> {
+  const supabase = createServerClient();
+  const tecnico_id = `TEST_legacy_cmp_${testPhone.slice(-6)}`;
+  const nombre = `Returning Worker ${testPhone.slice(-3)}`;
+  const cedula = testCedulaFor(testPhone);
+
+  const { error: extErr } = await supabase.from("tecnicos_extended").upsert({
+    tecnico_id,
+    phone: testPhone,
+    estado: "activo",
+    candidate_state: "approved",
+    profile_complete: true,
+    cedula,
+    appsheet_row_id: `TEST_AS_${tecnico_id}`,
+    legacy_popularidad: 9,
+    legacy_activity_count: 9,
+    imported_at: new Date().toISOString(),
+    import_source: "appsheet_legacy_bootstrap",
+    source: "appsheet_legacy_bootstrap",
+    enrichment_data: {
+      cedula: { tipo: "CC", numero: cedula },
+      ciudad_base: "Cali",
+      categorias_principales: ["Eléctrico y Datos"],
+    },
+  });
+  if (extErr)
+    throw new Error(`fixture legacy_approved_complete: ${extErr.message}`);
+
+  await supabase
+    .from("eventos")
+    .delete()
+    .eq("type", "tecnico_legacy_bootstrap")
+    .eq("entity_id", tecnico_id);
+  await supabase.from("eventos").insert({
+    type: "tecnico_legacy_bootstrap",
+    entity_id: tecnico_id,
+    actor: "system:legacy_bootstrap",
+    meta: { nombre, email: null, telefono: testPhone, popularidad: 9 },
+  });
+
+  return { tecnico_id, ot_ids: [] };
+}
+
+// Returns a "sister" phone derived from testPhone — used for fixtures that
+// must seed a worker on a DIFFERENT phone than the conversation phone, so the
+// cross-phone resumption flow has somewhere to resume from.
+function sisterPhoneFor(testPhone: string): string {
+  return `+99001${testPhone.slice(-7)}`;
+}
+
+// The deterministic name used by tecnico_legacy_incomplete_sister_phone.
+// Exported so the runner can substitute ${legacy_nombre} in user_utterances —
+// keeps the seed YAML free of testPhone-derived literals.
+export function legacyNombreFor(testPhone: string): string {
+  return `Andres Mendoza ${testPhone.slice(-3)}`;
+}
+
+async function seedTecnicoScreeningWithCedula(
+  testPhone: string
+): Promise<FixtureRefs> {
+  const supabase = createServerClient();
+  const tecnico_id = `TEST_scr_ced_${testPhone.slice(-6)}`;
+  const cedula = testCedulaFor(testPhone);
+  // Seed on a sister phone so the conversation testPhone is fresh and
+  // submit_candidate_dossier triggers a cross-phone merge.
+  const sisterPhone = sisterPhoneFor(testPhone);
+
+  const { error } = await supabase.from("tecnicos_extended").upsert({
+    tecnico_id,
+    phone: sisterPhone,
+    estado: "activo",
+    candidate_state: "screening",
+    cedula,
+    source: "warm",
+  });
+  if (error) throw new Error(`fixture screening_with_cedula: ${error.message}`);
+
+  await supabase
+    .from("eventos")
+    .delete()
+    .eq("type", "tecnico_registered")
+    .eq("entity_id", tecnico_id);
+  await supabase.from("eventos").insert({
+    type: "tecnico_registered",
+    entity_id: tecnico_id,
+    actor: "agent",
+    meta: {
+      nombre: `Cross-Phone Worker ${testPhone.slice(-3)}`,
+      ciudad: "Bogotá",
+      especialidades: ["eléctrico"],
+      modalidad: "individual",
+      phone: sisterPhone,
+    },
+  });
+
+  return { tecnico_id, ot_ids: [] };
+}
+
+async function seedTecnicoWithdrawnWithCedula(
+  testPhone: string
+): Promise<FixtureRefs> {
+  const supabase = createServerClient();
+  const tecnico_id = `TEST_wd_ced_${testPhone.slice(-6)}`;
+  const cedula = testCedulaFor(testPhone);
+  const sisterPhone = sisterPhoneFor(testPhone);
+
+  const { error } = await supabase.from("tecnicos_extended").upsert({
+    tecnico_id,
+    phone: sisterPhone,
+    estado: "activo",
+    candidate_state: "withdrawn",
+    cedula,
+    withdrawal_reason: "no_cedula_provided",
+    source: "warm",
+  });
+  if (error) throw new Error(`fixture withdrawn_with_cedula: ${error.message}`);
+
+  return { tecnico_id, ot_ids: [] };
+}
+
+async function seedTecnicoPendingWithCedula(
+  testPhone: string
+): Promise<FixtureRefs> {
+  const supabase = createServerClient();
+  const tecnico_id = `TEST_pen_ced_${testPhone.slice(-6)}`;
+  const cedula = testCedulaFor(testPhone);
+  // Pending on a sister phone so cross-phone resumption from testPhone
+  // hits find_by_cedula -> already_decided.
+  const sisterPhone = sisterPhoneFor(testPhone);
+
+  const { error } = await supabase.from("tecnicos_extended").upsert({
+    tecnico_id,
+    phone: sisterPhone,
+    estado: "activo",
+    candidate_state: "pending",
+    cedula,
+    source: "warm",
+  });
+  if (error) throw new Error(`fixture pending_with_cedula: ${error.message}`);
+
+  return { tecnico_id, ot_ids: [] };
+}
+
 async function seedTecnicoRegisteredBogotaElectrico(
   testPhone: string
 ): Promise<FixtureRefs> {
@@ -349,6 +624,13 @@ const SEEDERS: Record<
   open_ot_neiva_plomero: seedOpenOtNeivaPlomero,
   open_ot_cali_plomero: seedOpenOtCaliPlomero,
   multiple_open_ots_bogota: seedMultipleOpenOtsBogota,
+  // Stream A
+  tecnico_legacy_approved_incomplete: seedTecnicoLegacyApprovedIncomplete,
+  tecnico_legacy_approved_complete: seedTecnicoLegacyApprovedComplete,
+  tecnico_legacy_incomplete_sister_phone: seedTecnicoLegacyIncompleteSisterPhone,
+  tecnico_screening_with_cedula: seedTecnicoScreeningWithCedula,
+  tecnico_withdrawn_with_cedula: seedTecnicoWithdrawnWithCedula,
+  tecnico_pending_with_cedula: seedTecnicoPendingWithCedula,
 };
 
 /**
@@ -376,11 +658,13 @@ export async function applyFixtures(
 export async function cleanupTestData(): Promise<void> {
   const supabase = createServerClient();
 
-  // Collect TEST_ tecnico_ids for cascading deletes.
+  // Collect TEST_ tecnico_ids for cascading deletes. The +9900%/+99001% range
+  // covers both primary test phones and Stream A "sister" phones used by
+  // cross-phone fixtures.
   const { data: tecs } = await supabase
     .from("tecnicos_extended")
     .select("tecnico_id")
-    .like("phone", "+99000%");
+    .like("phone", "+9900%");
 
   const ids = (tecs ?? []).map((t) => t.tecnico_id);
 
@@ -398,6 +682,10 @@ export async function cleanupTestData(): Promise<void> {
     await supabase.from("documentos").delete().in("tecnico_id", allIds);
     await supabase.from("contratos").delete().in("tecnico_id", allIds);
     await supabase.from("postulaciones").delete().in("tecnico_id", allIds);
+    // Stream A tables — must delete BEFORE tecnicos_extended (FK).
+    await supabase.from("hr_notes").delete().in("tecnico_id", allIds);
+    await supabase.from("candidate_decisions").delete().in("tecnico_id", allIds);
+    await supabase.from("candidate_dossiers").delete().in("tecnico_id", allIds);
     await supabase.from("eventos").delete().in("entity_id", allIds);
     await supabase.from("tecnicos_mirror").delete().in("row_id", allIds);
   }
@@ -407,11 +695,11 @@ export async function cleanupTestData(): Promise<void> {
   await supabase.from("contratos").delete().like("ot_id", "TEST_OT_%");
   await supabase.from("ots_mirror").delete().like("row_id", "TEST_OT_%");
 
-  // Delete sessions + messages for test phones.
+  // Delete sessions + messages for test phones (turns cascade via FK).
   const { data: sessions } = await supabase
     .from("sessions")
     .select("id")
-    .like("phone", "+99000%");
+    .like("phone", "+9900%");
 
   const sessionIds = (sessions ?? []).map((s) => s.id);
   if (sessionIds.length > 0) {
@@ -419,7 +707,7 @@ export async function cleanupTestData(): Promise<void> {
     await supabase.from("sessions").delete().in("id", sessionIds);
   }
 
-  // Finally delete tecnicos_extended rows.
-  await supabase.from("tecnicos_extended").delete().like("phone", "+99000%");
+  // Finally delete tecnicos_extended rows (children already cleared above).
+  await supabase.from("tecnicos_extended").delete().like("phone", "+9900%");
   await supabase.from("tecnicos_extended").delete().like("tecnico_id", "TEST_%");
 }

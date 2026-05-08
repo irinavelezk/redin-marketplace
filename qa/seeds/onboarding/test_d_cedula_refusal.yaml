@@ -1,0 +1,38 @@
+name: test_d_cedula_refusal
+prd_ref: "§11.2 / Test D"
+category: onboarding
+description: "Cold worker registers, then refuses to share cedula twice. Toño calls mark_candidate_withdrawn with reason='no_cedula_provided'."
+
+db_fixtures:
+  - tecnico_not_registered
+
+user_utterances:
+  - "hola"
+  - "soy Maria Torres, vivo en Cali, soy plomera, trabajo sola"
+  - "no, no quiero dar mi cédula. no me siento cómoda con eso."
+  - "no, en serio, no la voy a dar."
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: register_tecnico
+  - tool: mark_candidate_withdrawn
+    args_contain:
+      reason: "no_cedula_provided"
+  - tool: submit_candidate_dossier
+    must_NOT_be_called: true
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+
+expected_db_state:
+  candidate_state: "withdrawn"
+  withdrawal_reason: "no_cedula_provided"
+
+expected_dossier:
+  must_be_written: false
+
+expected_eventos:
+  - type: candidate_withdrawn
+    meta_contains:
+      reason: "no_cedula_provided"

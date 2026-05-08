@@ -17,10 +17,21 @@ import { readFileSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+import { createServerClient } from "@redin/shared";
 import { parseSeedYaml, type Seed } from "./seeds/schema.js";
-import { applyFixtures, cleanupTestData, allocateTestPhone } from "./fixtures.js";
+import {
+  applyFixtures,
+  cleanupTestData,
+  allocateTestPhone,
+  testCedulaFor,
+  legacyNombreFor,
+} from "./fixtures.js";
 import { injectMessage, type InjectResult } from "./inject.js";
-import { deterministicCheck, type DeterministicResult } from "./deterministic.js";
+import {
+  deterministicCheck,
+  deterministicCheckWithDbState,
+  type DeterministicResult,
+} from "./deterministic.js";
 import { judgeConversation, type JudgeResult } from "./judge.js";
 
 // ---------------------------------------------------------------------------
@@ -71,7 +82,7 @@ function parseArgs(): {
 // ---------------------------------------------------------------------------
 
 function loadSeeds(onlyName: string | null): Seed[] {
-  const dirs = ["journeys", "refusals", "redteam"];
+  const dirs = ["journeys", "refusals", "redteam", "onboarding"];
   const seeds: Seed[] = [];
 
   for (const dir of dirs) {
@@ -124,6 +135,7 @@ interface CoverageReport {
   journeys: { total: number; covered: number };
   refusals: { total: number; covered: number };
   redteam: { total: number; covered: number };
+  onboarding: { total: number; covered: number };
   ok: boolean;
 }
 
@@ -139,20 +151,24 @@ function computeCoverage(results: SeedResult[]): CoverageReport {
   const journeySeeds = results.filter((r) => r.seed.category === "journey");
   const refusalSeeds = results.filter((r) => r.seed.category === "refusal");
   const redteamSeeds = results.filter((r) => r.seed.category === "redteam");
+  const onboardingSeeds = results.filter((r) => r.seed.category === "onboarding");
 
   const journeysCovered = journeySeeds.filter((r) => passNames.has(r.seed.name)).length;
   const refusalsCovered = refusalSeeds.filter((r) => passNames.has(r.seed.name)).length;
   const redteamCovered = redteamSeeds.filter((r) => passNames.has(r.seed.name)).length;
+  const onboardingCovered = onboardingSeeds.filter((r) => passNames.has(r.seed.name)).length;
 
   const ok =
     journeysCovered === journeySeeds.length &&
     refusalsCovered === refusalSeeds.length &&
-    redteamCovered === redteamSeeds.length;
+    redteamCovered === redteamSeeds.length &&
+    onboardingCovered === onboardingSeeds.length;
 
   return {
     journeys: { total: journeySeeds.length, covered: journeysCovered },
     refusals: { total: refusalSeeds.length, covered: refusalsCovered },
     redteam: { total: redteamSeeds.length, covered: redteamCovered },
+    onboarding: { total: onboardingSeeds.length, covered: onboardingCovered },
     ok,
   };
 }
@@ -223,8 +239,9 @@ function writeReport(
   lines.push(
     `Coverage: journeys ${coverage.journeys.covered}/${coverage.journeys.total}, ` +
       `refusals ${coverage.refusals.covered}/${coverage.refusals.total}, ` +
-      `redteam ${coverage.redteam.covered}/${coverage.redteam.total} → ` +
-      `${coverage.journeys.covered + coverage.refusals.covered + coverage.redteam.covered}/${totalSeeds} covered`
+      `redteam ${coverage.redteam.covered}/${coverage.redteam.total}, ` +
+      `onboarding ${coverage.onboarding.covered}/${coverage.onboarding.total} → ` +
+      `${coverage.journeys.covered + coverage.refusals.covered + coverage.redteam.covered + coverage.onboarding.covered}/${totalSeeds} covered`
   );
   lines.push("");
   lines.push("## Results");
@@ -372,25 +389,76 @@ async function main(): Promise<void> {
     // Drive Toño turn by turn.
     const turns: InjectResult[] = [];
     let sessionId: string | undefined;
+    // Capture the conversation start time so DB-state assertions know the
+    // floor for "rows written during this conversation".
+    const conversationStart = new Date();
 
-    for (const utterance of seed.user_utterances) {
+    // Per-run substitutions in user_utterances AND deeply within
+    // expected_tool_calls / expected_assertions / expected_eventos so a seed
+    // can reference the fixture-allocated cedula or legacy name uniformly.
+    //   ${cedula}        — testCedulaFor(testPhone)
+    //   ${legacy_nombre} — legacyNombreFor(testPhone)
+    const runCedula = testCedulaFor(testPhone);
+    const runLegacyNombre = legacyNombreFor(testPhone);
+    const expand = (s: string): string =>
+      s.replace(/\$\{cedula\}/g, runCedula).replace(/\$\{legacy_nombre\}/g, runLegacyNombre);
+    const expandDeep = (v: unknown): unknown => {
+      if (typeof v === "string") return expand(v);
+      if (Array.isArray(v)) return v.map(expandDeep);
+      if (v !== null && typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+          out[k] = expandDeep(val);
+        }
+        return out;
+      }
+      return v;
+    };
+    const liveSeed: Seed = {
+      ...seed,
+      user_utterances: seed.user_utterances.map(expand),
+      expected_tool_calls: (expandDeep(seed.expected_tool_calls) as Seed["expected_tool_calls"]) ?? [],
+      expected_assertions: (expandDeep(seed.expected_assertions) as Seed["expected_assertions"]) ?? [],
+      expected_eventos: seed.expected_eventos
+        ? (expandDeep(seed.expected_eventos) as Seed["expected_eventos"])
+        : undefined,
+    };
+
+    for (const utterance of liveSeed.user_utterances) {
       const turnStart = new Date();
+      const expanded = utterance;
       try {
-        const result = await injectMessage(testPhone, utterance, turnStart, sessionId);
+        const result = await injectMessage(testPhone, expanded, turnStart, sessionId);
         turns.push(result);
         console.log(
-          `  [turn] "${utterance.slice(0, 50)}" → tools:[${result.toolCallsMade.map((t) => t.name).join(",")}] reply:${result.reply.length}c`
+          `  [turn] "${expanded.slice(0, 50)}" → tools:[${result.toolCallsMade.map((t) => t.name).join(",")}] reply:${result.reply.length}c`
         );
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`  [error] inject failed for turn "${utterance.slice(0, 40)}": ${msg}`);
+        console.error(`  [error] inject failed for turn "${expanded.slice(0, 40)}": ${msg}`);
         // Push an empty turn so indices remain aligned.
         turns.push({ reply: "", toolCallsMade: [], eventosWritten: [] });
       }
     }
 
-    // Deterministic check.
-    const detResult = deterministicCheck(seed, turns);
+    // Deterministic check. Use the async variant when the seed declares any
+    // of expected_db_state / expected_dossier / expected_eventos so we read
+    // the post-conversation row state (Stream A assertions). liveSeed has
+    // had ${cedula} / ${legacy_nombre} substituted so assertions match the
+    // actual values the agent saw.
+    const needsDbCheck =
+      liveSeed.expected_db_state ||
+      liveSeed.expected_dossier ||
+      (liveSeed.expected_eventos && liveSeed.expected_eventos.length > 0);
+    const detResult: DeterministicResult = needsDbCheck
+      ? await deterministicCheckWithDbState(
+          liveSeed,
+          turns,
+          testPhone,
+          conversationStart,
+          createServerClient()
+        )
+      : deterministicCheck(liveSeed, turns);
     console.log(
       `  [det] ${detResult.passed ? "PASS" : `FAIL (${detResult.failures.length} failure(s))`}`
     );
@@ -441,7 +509,8 @@ async function main(): Promise<void> {
   console.log(
     `[eval] Coverage: journeys ${coverage.journeys.covered}/${coverage.journeys.total} ` +
       `refusals ${coverage.refusals.covered}/${coverage.refusals.total} ` +
-      `redteam ${coverage.redteam.covered}/${coverage.redteam.total}`
+      `redteam ${coverage.redteam.covered}/${coverage.redteam.total} ` +
+      `onboarding ${coverage.onboarding.covered}/${coverage.onboarding.total}`
   );
 
   if (detFail > 0 || !judgeGateOk || !coverage.ok) {

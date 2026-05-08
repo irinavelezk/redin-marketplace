@@ -1,0 +1,32 @@
+name: test_f_cross_phone_resumption
+prd_ref: "§11.2 / Test F"
+category: onboarding
+description: "Worker registered earlier on a different phone (state='pending', cedula=X). Now writes from a new phone giving same cedula X. Toño calls find_by_cedula, sees pending, tells worker they're in queue. NO dossier resubmission."
+
+db_fixtures:
+  # Seeds a worker on a SISTER phone (+99001…) with cedula=${cedula} and
+  # state='pending'. The conversation testPhone (+99000…) is fresh.
+  - tecnico_pending_with_cedula
+
+user_utterances:
+  - "hola"
+  - "soy Carlos Pérez, en Bogotá, soy eléctrico, trabajo solo"
+  - "mi cédula es ${cedula}"
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: find_by_cedula
+    args_contain:
+      cedula: "${cedula}"
+  - tool: submit_candidate_dossier
+    must_NOT_be_called: true
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+  # When find_by_cedula returns pending, Toño tells the worker they're in queue.
+  # Match permissively — exact wording varies turn to turn.
+  - response_matches_regex: "(cola|registrado|valid|equipo|pend)"
+
+expected_dossier:
+  must_be_written: false

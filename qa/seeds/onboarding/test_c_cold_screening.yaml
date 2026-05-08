@@ -1,0 +1,45 @@
+name: test_c_cold_screening
+prd_ref: "§11.2 / Test C"
+category: onboarding
+description: "Cold worker contacts Toño from a fresh phone, completes registration + qualification + cedula collection. Toño submits a dossier with the recommendation triplet; state lands in 'pending'."
+
+db_fixtures:
+  - tecnico_not_registered
+  - open_ot_bogota_electrico
+
+user_utterances:
+  - "hola, quiero trabajar con redin"
+  - "soy Pedro Ramírez, vivo en Bogotá, manejo eléctrico, trabajo solo"
+  - "tengo 8 años de experiencia haciendo mantenimiento eléctrico residencial y comercial. tengo certificado RETIE, herramienta básica y de medición, ARL activa con Sura, EPS activa, antecedentes limpios. estoy disponible para fines de semana."
+  - "mi cédula es ${cedula}"
+  - "sí, en Bogotá principalmente. también puedo desplazarme a Soacha."
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: register_tecnico
+    args_contain:
+      ciudad: "Bogotá"
+  - tool: find_by_cedula
+  - tool: submit_candidate_dossier
+    result_code: "submitted"
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+  - response_does_not_contain: "qualification_state"
+
+expected_db_state:
+  candidate_state: "pending"
+  cedula_present: true
+
+expected_dossier:
+  must_be_written: true
+  tono_recommendation_in:
+    - "recommend_approve"
+    - "recommend_reject"
+    - "recommend_call"
+  tono_confidence_min: 0.0
+  tono_reasoning_min_length: 10
+
+expected_eventos:
+  - type: candidate_dossier_submitted

@@ -1,0 +1,37 @@
+name: test_e_legacy_enrichment
+prd_ref: "§11.2 / Test E (CASE A)"
+category: onboarding
+description: "Legacy worker (approved + profile_complete=false) messages Toño from their bootstrapped phone. Toño greets by name, calls complete_legacy_profile to fill cedula + ciudad + categoria. State stays 'approved', no dossier created."
+
+db_fixtures:
+  - tecnico_legacy_approved_incomplete
+
+user_utterances:
+  - "hola"
+  - "mi cédula es ${cedula}, vivo en Cali"
+  - "manejo trabajos eléctricos: iluminación, puntos eléctricos, cableado de datos"
+
+expected_tool_calls:
+  - tool: complete_legacy_profile
+    args_contain:
+      profile_data:
+        ciudad_base: "Cali"
+  - tool: register_tecnico
+    must_NOT_be_called: true
+  - tool: submit_candidate_dossier
+    must_NOT_be_called: true
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+
+expected_db_state:
+  candidate_state: "approved"
+  profile_complete: true
+  cedula_present: true
+  import_source: "appsheet_legacy_bootstrap"
+  enrichment_data_has_keys:
+    - ciudad_base
+    - categorias_principales
+
+expected_dossier:
+  must_be_written: false

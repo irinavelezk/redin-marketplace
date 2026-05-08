@@ -1,0 +1,43 @@
+name: test_g_legacy_reconciliation
+prd_ref: "§11.2 / Test G"
+category: onboarding
+description: "A legacy worker writes from a brand new phone (no cedula match). Toño gathers the worker's name, find_by_cedula returns not-found, find_legacy_by_name surfaces a similarity match against the bootstrapped legacy worker, Toño escalates to HR with reason='possible_legacy_reconciliation' — does NOT auto-merge."
+
+db_fixtures:
+  # Seeds a legacy approved+incomplete worker on a SISTER phone with a known
+  # name (legacyNombreFor). The conversation testPhone is fresh.
+  - tecnico_legacy_incomplete_sister_phone
+
+user_utterances:
+  - "hola, vengo a trabajar con redin"
+  - "soy ${legacy_nombre}, vivo en Cali, soy eléctrico, trabajo solo"
+  - "mi cédula es ${cedula}"
+
+expected_tool_calls:
+  - tool: identify_user
+    must_be_first: true
+  - tool: register_tecnico
+  - tool: find_by_cedula
+  - tool: find_legacy_by_name
+  - tool: escalate_to_hr
+    args_contain:
+      reason: "possible_legacy_reconciliation"
+  - tool: submit_candidate_dossier
+    must_NOT_be_called: true
+  - tool: complete_legacy_profile
+    must_NOT_be_called: true
+
+expected_assertions:
+  - response_does_not_contain_cedula: true
+
+expected_escalation:
+  reason: "possible_legacy_reconciliation"
+  must_call_escalate_to_hr: true
+
+expected_dossier:
+  must_be_written: false
+
+expected_eventos:
+  - type: escalation
+    meta_contains:
+      reason: "possible_legacy_reconciliation"
