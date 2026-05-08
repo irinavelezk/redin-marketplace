@@ -34,8 +34,9 @@ import {
   createLogger,
   normalizeColombianPhone,
   requireEnv,
+  type CandidateState,
 } from "@redin/shared";
-import { AppSheetReadClient } from "@redin/sync/appsheet";
+import { AppSheetReadClient } from "../sync/src/appsheet";
 
 const log = createLogger("legacy-bootstrap");
 
@@ -139,19 +140,18 @@ async function main(): Promise<void> {
   });
 
   log.info("fetching AppSheet TECNICOS");
-  const rows = await appsheet.find<AppSheetRow>("Tecnicos");
+  const { rows, unknown_columns } = await appsheet.findWithSchemaCheck<AppSheetRow>(
+    "Tecnicos",
+    {
+      requiredWriteColumns: REQUIRED_COLUMNS,
+      knownColumns: [...KNOWN_COLUMNS],
+    }
+  );
   log.info("rows fetched", { count: rows.length });
 
-  // Drift check: log unknown columns once (not per row).
-  const unknown = new Set<string>();
-  for (const r of rows) {
-    for (const k of Object.keys(r)) {
-      if (!KNOWN_COLUMNS.has(k)) unknown.add(k);
-    }
-  }
-  if (unknown.size > 0) {
+  if (unknown_columns.length > 0) {
     log.warn("AppSheet TECNICOS contains unknown columns", {
-      unknown: [...unknown],
+      unknown: unknown_columns,
     });
     await sb.from("eventos").insert({
       type: "appsheet_schema_drift",
@@ -159,19 +159,9 @@ async function main(): Promise<void> {
       actor: "system:legacy_bootstrap",
       meta: {
         table: "Tecnicos",
-        unknown_columns: [...unknown],
+        unknown_columns,
       },
     });
-  }
-
-  // Required-column hard check.
-  for (const required of REQUIRED_COLUMNS) {
-    const present = rows.some((r) => required in r);
-    if (!present) {
-      throw new Error(
-        `AppSheet TECNICOS missing required column "${required}". Refusing to import partial data.`
-      );
-    }
   }
 
   const counters: BootstrapCounters = {
@@ -253,7 +243,15 @@ async function main(): Promise<void> {
     } else {
       tecnicoId = existing.tecnico_id as string;
       priorState = (existing.candidate_state as string) ?? "screening";
-      const patch: Record<string, unknown> = {};
+      const patch: Partial<{
+        appsheet_row_id: string;
+        legacy_popularidad: number;
+        legacy_activity_count: number;
+        candidate_state: CandidateState;
+        import_source: string;
+        imported_at: string;
+        source: string;
+      }> = {};
       if (existing.appsheet_row_id !== appsheetRowId) {
         patch.appsheet_row_id = appsheetRowId;
       }
@@ -344,7 +342,7 @@ async function main(): Promise<void> {
           dossier_id: null,
           decision: "approve",
           resulting_state: "approved",
-          prior_state: priorState,
+          prior_state: priorState as CandidateState,
           tono_recommendation_at_decision_time: null,
           agreed_with_tono: null,
           hr_reasoning:
