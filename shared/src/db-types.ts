@@ -173,7 +173,11 @@ export type HrNoteRow = {
   created_at: string;
 };
 
-export type TurnsRow = TurnRow;
+// Flatten TurnRow (declared as an interface in dossier-types.ts) into a mapped
+// type so it's index-signature-compatible with supabase-js's GenericTable.Row
+// constraint of Record<string, unknown>. Pure type-level re-aliasing — same
+// shape, just record-compatible.
+export type TurnsRow = { [K in keyof TurnRow]: TurnRow[K] };
 
 export type CostKillSwitchOverrideRow = {
   id: string;
@@ -599,7 +603,10 @@ export interface Database {
         Relationships: NoRelationships;
       };
       daily_llm_cost: {
-        Row: DailyLlmCostRow;
+        // Materialize via mapped type — DailyLlmCostRow is an interface in
+        // dossier-types.ts and supabase-js's GenericView constraint requires
+        // Record<string, unknown>-compatible Rows. Mapped types satisfy that.
+        Row: { [K in keyof DailyLlmCostRow]: DailyLlmCostRow[K] };
         Relationships: NoRelationships;
       };
       turn_costs: {
@@ -618,7 +625,7 @@ export interface Database {
         Relationships: NoRelationships;
       };
       tono_agreement_metrics: {
-        Row: TonoAgreementMetricRow;
+        Row: { [K in keyof TonoAgreementMetricRow]: TonoAgreementMetricRow[K] };
         Relationships: NoRelationships;
       };
     };

@@ -1,10 +1,16 @@
-// Tools index — import these wherever the 9-tool contract is needed.
+// Tools index — import these wherever the agent contract is needed.
+//
+// Agent-visible contract (LLM tool list): 14 tools — see schemas.ts.
+// Dispatch surface (this file): 14 + the deprecated set_qualification_state
+// shim (kept reachable for HR dashboard server actions until Stream B updates
+// them; not in the LLM-visible declarations).
 
 export * from "./types";
 export * from "./context";
 export * from "./schemas";
 export { recordEvent, logLlmCall, logLlmError } from "./events";
 export type { RecordEventInput, LlmCallMeta, LlmErrorMeta } from "./events";
+
 export { identifyUser } from "./identify-user";
 export { registerTecnico } from "./register-tecnico";
 export { readPendingOts } from "./read-pending-ots";
@@ -15,6 +21,26 @@ export { uploadDocumento } from "./upload-documento";
 export { escalateToHr } from "./escalate-to-hr";
 export { logEvent } from "./log-event";
 export { setQualificationState } from "./set-qualification-state";
+export { submitCandidateDossier } from "./submit-candidate-dossier";
+export { findByCedula } from "./find-by-cedula";
+export { markCandidateWithdrawn } from "./mark-candidate-withdrawn";
+export { completeLegacyProfile } from "./complete-legacy-profile";
+export { findLegacyByName } from "./find-legacy-by-name";
+export {
+  normalizeName,
+  levenshtein,
+  findMatches,
+} from "./legacy-name-match";
+export type { NameMatch, FindMatchesOptions } from "./legacy-name-match";
+export type {
+  LegacyEnrichmentData,
+  CompleteLegacyProfileInput,
+  CompleteLegacyProfileOutput,
+} from "./complete-legacy-profile";
+export type {
+  FindLegacyByNameInput,
+  FindLegacyByNameOutput,
+} from "./find-legacy-by-name";
 
 // Centralized dispatcher — used by Toño and by the dashboard chat API route.
 import type { ToolContext } from "./context";
@@ -28,6 +54,11 @@ import { uploadDocumento } from "./upload-documento";
 import { escalateToHr } from "./escalate-to-hr";
 import { logEvent } from "./log-event";
 import { setQualificationState } from "./set-qualification-state";
+import { submitCandidateDossier } from "./submit-candidate-dossier";
+import { findByCedula } from "./find-by-cedula";
+import { markCandidateWithdrawn } from "./mark-candidate-withdrawn";
+import { completeLegacyProfile } from "./complete-legacy-profile";
+import { findLegacyByName } from "./find-legacy-by-name";
 import type { ToolName } from "./schemas";
 import type { ToolResult } from "./types";
 
@@ -36,13 +67,11 @@ export type ToolArgs = Record<string, unknown>;
 export async function dispatchTool(
   ctx: ToolContext,
   name: ToolName | string,
-  // LLM-provided args — we cast to each tool's input type internally.
-  // Keep as unknown at the boundary; trust NO field.
   args: ToolArgs
 ): Promise<ToolResult<unknown>> {
   switch (name) {
     case "identify_user":
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- LLM payload is unknown at boundary
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return identifyUser(ctx, args as any);
     case "register_tecnico":
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,7 +97,25 @@ export async function dispatchTool(
     case "log_event":
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return logEvent(ctx, args as any);
+    case "submit_candidate_dossier":
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return submitCandidateDossier(ctx, args as any);
+    case "find_by_cedula":
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return findByCedula(ctx, args as any);
+    case "mark_candidate_withdrawn":
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return markCandidateWithdrawn(ctx, args as any);
+    case "complete_legacy_profile":
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return completeLegacyProfile(ctx, args as any);
+    case "find_legacy_by_name":
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return findLegacyByName(ctx, args as any);
     case "set_qualification_state":
+      // Deprecated. Routed to the compat shim. Not in schemas.ts so the LLM
+      // never sees it; HR dashboard server actions still call it by name
+      // until Stream B updates them.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return setQualificationState(ctx, args as any);
     default:

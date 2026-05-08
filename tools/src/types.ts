@@ -171,18 +171,25 @@ export interface EscalateToHrOutput {
   delivered_to_telegram: boolean;
 }
 
-// ---------- set_qualification_state ----------
-// Agent-callable: only `needs_review` accepted. HR-only states (qualified /
-// rejected / needs_call) are rejected at the tool layer.
+// ---------- set_qualification_state — DEPRECATED COMPATIBILITY SHIM ----------
+// Removed from the LLM-visible tool list (schemas.ts) — the agent can no
+// longer call it. Dispatch entry remains so HR dashboard server actions
+// referencing the legacy name keep working until Stream B retires them.
+// See tools/src/set-qualification-state.ts for the translation table.
 export interface SetQualificationStateInput {
   tecnico_id: string;
-  state: "needs_review";
-  summary: string;
+  state:
+    | "needs_review"
+    | "qualified"
+    | "rejected"
+    | "needs_call"
+    | "pending";
+  summary?: string;
   actor?: Actor;
 }
 export interface SetQualificationStateOutput {
   tecnico_id: string;
-  state: "needs_review" | "already_decided";
+  state: string;
   prior_state?: string;
 }
 

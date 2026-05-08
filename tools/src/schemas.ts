@@ -1,14 +1,21 @@
-// Function-calling declarations for Toño's 9 tools.
-// Kept in sync with types.ts by hand — any change to tool I/O types must update this file.
-// Type names are UPPERCASE (legacy from Gemini integration); tono/src/llm.ts lowercases
-// them when converting to Anthropic input_schema. New entries should keep the uppercase
-// convention until the file is migrated to plain JSON Schema.
+// Function-calling declarations for Toño's 14 LLM-visible tools.
+// Kept in sync with types.ts and dossier-types.ts by hand — any change to
+// tool I/O types must update this file.
+//
+// Type names are UPPERCASE (legacy from Gemini integration); tono/src/llm.ts
+// lowercases them when converting to Anthropic input_schema. New entries
+// follow the same convention so the converter handles all 14 uniformly.
+//
+// set_qualification_state is INTENTIONALLY ABSENT — it's been removed from
+// the LLM-visible list per Stream A's contract update. The compat shim in
+// tools/src/set-qualification-state.ts is still reachable through dispatchTool
+// for any HR dashboard server action that hasn't been updated yet.
 
 // PRD §20 input length caps — enforced at tool handler layer.
 export const INPUT_CAPS = {
-  nombre: 80,        // register_tecnico.nombre
-  mensaje: 500,      // create_postulacion.mensaje
-  whatsapp: 2000,    // inbound WA text before LLM assembly
+  nombre: 80,
+  mensaje: 500,
+  whatsapp: 2000,
 } as const;
 
 export const TOOL_DECLARATIONS = [
@@ -151,28 +158,6 @@ export const TOOL_DECLARATIONS = [
     },
   },
   {
-    name: "set_qualification_state",
-    description:
-      "Marca este perfil como listo para que RRHH revise y apruebe. Llámalo cuando ya tengas suficiente contexto del técnico (especialidades reales, años de experiencia o referencias mencionadas, ciudades donde puede trabajar, herramientas, ARL/EPS si aplica). El técnico no puede postularse a OTs hasta que RRHH apruebe — no lo bloquees con preguntas innecesarias, pero asegúrate de tener un panorama útil. Idempotente. Estados qualified/rejected/needs_call son solo de RRHH y serán rechazados aquí.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        tecnico_id: { type: "STRING" },
-        state: {
-          type: "STRING",
-          enum: ["needs_review"],
-          description: "Único valor permitido para el agente.",
-        },
-        summary: {
-          type: "STRING",
-          description:
-            "2-3 frases resumiendo lo que aprendiste: experiencia, fortalezas, transporte, referencias, disponibilidad. RRHH lo lee.",
-        },
-      },
-      required: ["tecnico_id", "state", "summary"],
-    },
-  },
-  {
     name: "log_event",
     description:
       "Registra una observación del agente: frustración, duda, confirmación implícita. Usado para medición HITL — no es visible para el técnico.",
@@ -184,6 +169,220 @@ export const TOOL_DECLARATIONS = [
         meta: { type: "OBJECT" },
       },
       required: ["type"],
+    },
+  },
+  {
+    name: "submit_candidate_dossier",
+    description:
+      "Envía el dossier estructurado del técnico a RRHH. Llámalo cuando ya tengas la cédula del técnico Y un panorama útil del perfil. Valida cédula contra registros existentes; si la cédula coincide con un técnico ya aprobado/rechazado/etc., retorna un código de outcome y NO crea un duplicado. El estado SIEMPRE queda en 'pending' tras una submisión exitosa — RRHH decide. Producir tono_recommendation + tono_confidence + tono_reasoning con base en lo que recolectaste; son una sugerencia, no una decisión final.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        tecnico_id: { type: "STRING" },
+        dossier: {
+          type: "OBJECT",
+          description:
+            "CandidateDossier completo. Ver tools/src/dossier-types.ts para la forma exacta. La cédula es OBLIGATORIA. tono_recommendation ∈ {recommend_approve, recommend_reject, recommend_call}. tono_confidence ∈ [0.0, 1.0]. tono_reasoning entre 10 y 500 caracteres explicando por qué la recomendación.",
+          properties: {
+            schema_version: { type: "INTEGER", enum: [1] },
+            cedula: {
+              type: "OBJECT",
+              properties: {
+                tipo: { type: "STRING", enum: ["CC", "CE", "PEP"] },
+                numero: { type: "STRING", description: "Solo dígitos, 5-11 caracteres" },
+              },
+              required: ["tipo", "numero"],
+            },
+            modalidad: { type: "STRING", enum: ["individual", "cuadrilla", "lider"] },
+            categorias_principales: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+              description: "1-4 categorías canónicas",
+            },
+            subcategorias: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+              description: "Al menos 1 subcategoría canónica",
+            },
+            anos_experiencia: { type: "INTEGER", description: "0-60" },
+            ciudad_base: { type: "STRING", description: "Ciudad canónica" },
+            ciudades_cobertura: { type: "ARRAY", items: { type: "STRING" } },
+            certificaciones: {
+              type: "OBJECT",
+              properties: {
+                altura: { type: "BOOLEAN" },
+                altura_avanzado: { type: "BOOLEAN" },
+                retie: { type: "BOOLEAN" },
+                andamios: { type: "BOOLEAN" },
+                soldadura: { type: "BOOLEAN" },
+                conte: { type: "BOOLEAN" },
+                otras: { type: "STRING" },
+              },
+            },
+            herramientas: {
+              type: "OBJECT",
+              properties: {
+                basicas: { type: "BOOLEAN" },
+                electrica_obra: { type: "BOOLEAN" },
+                electrica_medicion: { type: "BOOLEAN" },
+                altura_personal: { type: "BOOLEAN" },
+                andamio_propio: { type: "BOOLEAN" },
+                vehiculo_propio: { type: "BOOLEAN" },
+              },
+            },
+            disponibilidad: {
+              type: "OBJECT",
+              properties: {
+                inicio_inmediato: { type: "BOOLEAN" },
+                fines_de_semana: { type: "BOOLEAN" },
+                nocturno: { type: "BOOLEAN" },
+                viaja_otra_ciudad: { type: "BOOLEAN" },
+                ciudades_viaje: { type: "ARRAY", items: { type: "STRING" } },
+              },
+            },
+            cumplimiento: {
+              type: "OBJECT",
+              properties: {
+                arl_activa: { type: "BOOLEAN" },
+                arl_fondo: { type: "STRING" },
+                eps_activa: { type: "BOOLEAN" },
+                antecedentes_limpios: { type: "BOOLEAN" },
+              },
+            },
+            referencias_externas: { type: "ARRAY", items: { type: "STRING" } },
+            dossier: {
+              type: "STRING",
+              description: "Texto libre, máx 2000 caracteres. Lo lee RRHH.",
+            },
+            tono_recommendation: {
+              type: "STRING",
+              enum: ["recommend_approve", "recommend_reject", "recommend_call"],
+            },
+            tono_confidence: { type: "NUMBER", description: "0.0-1.0" },
+            tono_reasoning: {
+              type: "STRING",
+              description: "10-500 caracteres explicando la recomendación",
+            },
+            gaps: {
+              type: "ARRAY",
+              items: { type: "STRING" },
+              description: "Cosas que NO te quedaron firmes — útil si recommend_call",
+            },
+          },
+          required: [
+            "schema_version",
+            "cedula",
+            "modalidad",
+            "categorias_principales",
+            "subcategorias",
+            "anos_experiencia",
+            "ciudad_base",
+            "certificaciones",
+            "herramientas",
+            "disponibilidad",
+            "cumplimiento",
+            "dossier",
+            "tono_recommendation",
+            "tono_confidence",
+            "tono_reasoning",
+            "gaps",
+          ],
+        },
+      },
+      required: ["tecnico_id", "dossier"],
+    },
+  },
+  {
+    name: "find_by_cedula",
+    description:
+      "Busca un técnico por cédula. Llámalo después de capturar la cédula del usuario, ANTES de submit_candidate_dossier, para detectar regresos en otro teléfono. Read-only. Retorna {found: true, tecnico_id, candidate_state, last_phone, nombre} o {found: false}.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        cedula: {
+          type: "STRING",
+          description: "Solo dígitos, 5-11 caracteres",
+        },
+      },
+      required: ["cedula"],
+    },
+  },
+  {
+    name: "mark_candidate_withdrawn",
+    description:
+      "Marca al técnico como retirado del proceso. Llámalo cuando el técnico se niega a dar la cédula (reason='no_cedula_provided'), pide salir explícitamente (reason='opted_out'), o ha estado sin responder (reason='no_response'). Idempotente. Solo se aplica a técnicos en 'screening'.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        tecnico_id: { type: "STRING" },
+        reason: {
+          type: "STRING",
+          enum: [
+            "no_cedula_provided",
+            "no_response",
+            "opted_out",
+            "duplicate_phone",
+            "other",
+          ],
+        },
+        notes: {
+          type: "STRING",
+          description: "Texto opcional con contexto para HR",
+        },
+      },
+      required: ["tecnico_id", "reason"],
+    },
+  },
+  {
+    name: "complete_legacy_profile",
+    description:
+      "Solo para CASO A (técnico legacy con profile_complete=false). Recolecta de forma incremental los datos faltantes (cédula, ciudad_base, categorías, certificaciones, etc.) y guarda en enrichment_data. NO crea candidate_dossiers. NO dispara revisión de RRHH. NO cambia el estado (queda 'approved'). Idempotente — pasar los mismos datos dos veces es no-op. profile_complete pasa a true automáticamente cuando hay cédula + ciudad_base + ≥1 categoría_principal.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        tecnico_id: { type: "STRING" },
+        profile_data: {
+          type: "OBJECT",
+          description:
+            "Subconjunto del perfil. Cualquier campo es opcional; pásale lo que tengas. La forma sigue CandidateDossier minus el triplete de recomendación.",
+          properties: {
+            cedula: {
+              type: "OBJECT",
+              properties: {
+                tipo: { type: "STRING", enum: ["CC", "CE", "PEP"] },
+                numero: { type: "STRING" },
+              },
+            },
+            modalidad: { type: "STRING", enum: ["individual", "cuadrilla", "lider"] },
+            ciudad_base: { type: "STRING" },
+            ciudades_cobertura: { type: "ARRAY", items: { type: "STRING" } },
+            categorias_principales: { type: "ARRAY", items: { type: "STRING" } },
+            subcategorias: { type: "ARRAY", items: { type: "STRING" } },
+            anos_experiencia: { type: "INTEGER" },
+            certificaciones: { type: "OBJECT" },
+            herramientas: { type: "OBJECT" },
+            disponibilidad: { type: "OBJECT" },
+            cumplimiento: { type: "OBJECT" },
+            notas: { type: "STRING" },
+          },
+        },
+      },
+      required: ["tecnico_id", "profile_data"],
+    },
+  },
+  {
+    name: "find_legacy_by_name",
+    description:
+      "Busca técnicos legacy aprobados con perfil incompleto cuyo nombre se parezca al nombre dado (Levenshtein ≤ 2 o similitud ≥ 0.80, con normalización española). Llámalo SOLO cuando find_by_cedula retornó found:false Y el técnico ya te dio su nombre completo. Si retorna ≥1 match con similarity ≥ 0.80, llama escalate_to_hr inmediatamente con reason='possible_legacy_reconciliation' — NO auto-fusiones, NO sigas screening.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        name: {
+          type: "STRING",
+          description: "Nombre completo dado por el técnico",
+        },
+      },
+      required: ["name"],
     },
   },
 ] as const;

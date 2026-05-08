@@ -16,6 +16,12 @@
     "./upload-documento": "./src/upload-documento.ts",
     "./escalate-to-hr": "./src/escalate-to-hr.ts",
     "./log-event": "./src/log-event.ts",
+    "./submit-candidate-dossier": "./src/submit-candidate-dossier.ts",
+    "./find-by-cedula": "./src/find-by-cedula.ts",
+    "./mark-candidate-withdrawn": "./src/mark-candidate-withdrawn.ts",
+    "./complete-legacy-profile": "./src/complete-legacy-profile.ts",
+    "./find-legacy-by-name": "./src/find-legacy-by-name.ts",
+    "./legacy-name-match": "./src/legacy-name-match.ts",
     "./schemas": "./src/schemas.ts"
   },
   "scripts": {
