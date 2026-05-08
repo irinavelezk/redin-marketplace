@@ -1,10 +1,13 @@
-// Per-worker detail page — everything HR needs to know about one técnico:
-// profile, Toño's qualification summary, outbound WhatsApp messages, postulaciones,
-// contratos, and the raw eventos log. Read-only by design; decision actions stay
-// on /hr/qualification-queue and /hr/pipeline so each surface keeps a single job.
+// Per-worker detail page — full state-history timeline + decision actions.
+// Per docs/architecture/onboarding-contracts.md §11.3:
+//   - Profile + AppSheet projection warning banner (when stuck)
+//   - Decision-gated buttons: Revocar (approved → revoked), Reabrir (rejected/withdrawn → screening)
+//   - Timeline merging dossiers + candidate_decisions + hr_notes + state events
+//   - Add-note form for the hr_notes thread
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-import type { CandidateState } from "@redin/shared";
+import { submitDecision, appendHrNote } from "@/lib/decisions";
+import type { CandidateState, TonoRecommendation, HrAction } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
@@ -44,13 +47,25 @@ function parseRegistered(meta: unknown): RegisteredMeta {
   };
 }
 
-interface ReviewMeta {
-  summary?: string;
+interface TimelineEntry {
+  kind: "dossier" | "decision" | "note" | "event";
+  at: string;
+  payload: unknown;
 }
-function parseReview(meta: unknown): ReviewMeta {
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
-  const m = meta as Record<string, unknown>;
-  return { summary: typeof m.summary === "string" ? m.summary : undefined };
+
+function appsheetBannerText(error: string | null): {
+  title: string;
+  detail: string;
+} | null {
+  if (!error) return null;
+  if (error.startsWith("ambiguous_name")) {
+    return {
+      title: "AppSheet — nombre ambiguo",
+      detail:
+        "AppSheet tiene múltiples filas con este nombre. Resolvé manual: editá appsheet_row_id con el Row ID correcto, o eliminá los duplicados en AppSheet, luego limpiá appsheet_sync_pending.",
+    };
+  }
+  return { title: "AppSheet — error de sincronización", detail: error };
 }
 
 export default async function TecnicoDetailPage({
@@ -83,43 +98,96 @@ export default async function TecnicoDetailPage({
     );
   }
 
-  // Latest registration meta (nombre/ciudad/especialidades/modalidad)
-  const { data: regEvent } = await supa
-    .from("eventos")
-    .select("meta")
-    .eq("type", "tecnico_registered")
-    .eq("entity_id", tecnicoId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const reg = parseRegistered(regEvent?.meta);
+  const [
+    regEventRes,
+    dossiersRes,
+    decisionsRes,
+    notesRes,
+    stateEventsRes,
+    outboundRes,
+    postulacionesRes,
+    contratosRes,
+    evaluationsRes,
+    eventsRes,
+  ] = await Promise.all([
+    supa
+      .from("eventos")
+      .select("meta")
+      .eq("type", "tecnico_registered")
+      .eq("entity_id", tecnicoId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supa
+      .from("candidate_dossiers")
+      .select("*")
+      .eq("tecnico_id", tecnicoId)
+      .order("created_at", { ascending: false }),
+    supa
+      .from("candidate_decisions")
+      .select("*")
+      .eq("tecnico_id", tecnicoId)
+      .order("decided_at", { ascending: false }),
+    supa
+      .from("hr_notes")
+      .select("*")
+      .eq("tecnico_id", tecnicoId)
+      .order("created_at", { ascending: false }),
+    supa
+      .from("eventos")
+      .select("type, actor, meta, created_at")
+      .eq("entity_id", tecnicoId)
+      .in("type", [
+        "candidate_dossier_submitted",
+        "candidate_withdrawn",
+        "cedula_merged",
+        "appsheet_added",
+        "appsheet_deleted",
+        "appsheet_add_skipped_existing",
+      ])
+      .order("created_at", { ascending: false }),
+    supa
+      .from("outbound_messages")
+      .select("*")
+      .eq("phone", tec.phone)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    supa
+      .from("postulaciones")
+      .select("*")
+      .eq("tecnico_id", tecnicoId)
+      .order("applied_at", { ascending: false }),
+    supa
+      .from("contratos")
+      .select("*")
+      .eq("tecnico_id", tecnicoId)
+      .order("sent_at", { ascending: false, nullsFirst: false }),
+    supa
+      .from("tecnico_evaluations")
+      .select("*")
+      .eq("tecnico_id", tecnicoId)
+      .order("created_at", { ascending: false }),
+    supa
+      .from("eventos")
+      .select("type, actor, meta, created_at")
+      .eq("entity_id", tecnicoId)
+      .order("created_at", { ascending: false })
+      .limit(100),
+  ]);
 
-  // Latest qualification_review_requested meta (Toño's summary)
-  const { data: reviewEvent } = await supa
-    .from("eventos")
-    .select("meta, created_at")
-    .eq("type", "qualification_review_requested")
-    .eq("entity_id", tecnicoId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const review = parseReview(reviewEvent?.meta);
+  const reg = parseRegistered(regEventRes.data?.meta);
+  const dossiers = dossiersRes.data ?? [];
+  const decisions = decisionsRes.data ?? [];
+  const notes = notesRes.data ?? [];
+  const stateEvents = stateEventsRes.data ?? [];
+  const outbound = outboundRes.data ?? [];
+  const postulaciones = postulacionesRes.data ?? [];
+  const contratos = contratosRes.data ?? [];
+  const evaluations = evaluationsRes.data ?? [];
+  const events = eventsRes.data ?? [];
 
-  // Outbound messages — most recent first
-  const { data: outbound } = await supa
-    .from("outbound_messages")
-    .select("*")
-    .eq("phone", tec.phone)
-    .order("created_at", { ascending: false })
-    .limit(50);
-
-  // Postulaciones with their OT
-  const { data: postulaciones } = await supa
-    .from("postulaciones")
-    .select("*")
-    .eq("tecnico_id", tecnicoId)
-    .order("applied_at", { ascending: false });
-  const otIds = [...new Set((postulaciones ?? []).map((p) => p.ot_id))];
+  // OT lookup for postulaciones
+  const otIds = [...new Set(postulaciones.map((p) => p.ot_id))];
   const { data: ots } = otIds.length
     ? await supa
         .from("ots_mirror")
@@ -133,35 +201,42 @@ export default async function TecnicoDetailPage({
     ])
   );
 
-  // Contratos
-  const { data: contratos } = await supa
-    .from("contratos")
-    .select("*")
-    .eq("tecnico_id", tecnicoId)
-    .order("sent_at", { ascending: false, nullsFirst: false });
-
-  // Evaluations
-  const { data: evaluations } = await supa
-    .from("tecnico_evaluations")
-    .select("*")
-    .eq("tecnico_id", tecnicoId)
-    .order("created_at", { ascending: false });
-
-  // Full event log (raw bitácora)
-  const { data: events } = await supa
-    .from("eventos")
-    .select("type, actor, meta, created_at")
-    .eq("entity_id", tecnicoId)
-    .order("created_at", { ascending: false })
-    .limit(100);
+  // Build merged timeline (reverse chronological).
+  const timeline: TimelineEntry[] = [
+    ...dossiers.map((d) => ({ kind: "dossier" as const, at: d.created_at, payload: d })),
+    ...decisions.map((d) => ({ kind: "decision" as const, at: d.decided_at, payload: d })),
+    ...notes.map((n) => ({ kind: "note" as const, at: n.created_at, payload: n })),
+    ...stateEvents.map((e) => ({ kind: "event" as const, at: e.created_at, payload: e })),
+  ];
+  timeline.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
   const stateClass = STATE_CLASS[tec.candidate_state] ?? "bg-slate-100 text-slate-700";
+  const banner = tec.appsheet_sync_pending
+    ? appsheetBannerText(tec.appsheet_sync_last_error)
+    : null;
+
+  // Decision buttons gating per legal transitions.
+  const canRevoke = tec.candidate_state === "approved";
+  const canReopen =
+    tec.candidate_state === "rejected" || tec.candidate_state === "withdrawn";
 
   return (
     <div className="space-y-6">
       <Link href="/hr/tecnicos" className="text-sm text-slate-500 hover:text-slate-700">
         ← Técnicos
       </Link>
+
+      {/* AppSheet projection warning — load-bearing visibility during pilot.
+          Surfaces stuck-projection rows so HR catches the issue in the dashboard,
+          not only via Telegram async pings. */}
+      {banner && (
+        <div className="card p-4 border-l-4 border-rose-500 bg-rose-50">
+          <div className="text-xs uppercase tracking-wide text-rose-700 mb-1">
+            ⚠ {banner.title} · intentos {tec.appsheet_sync_attempts}
+          </div>
+          <div className="text-sm text-rose-900">{banner.detail}</div>
+        </div>
+      )}
 
       {/* Profile header */}
       <div className="card p-4">
@@ -171,7 +246,9 @@ export default async function TecnicoDetailPage({
               {reg.nombre ?? "(sin nombre)"}
             </h1>
             <div className="text-sm text-slate-500 mt-1">
-              {tec.phone} · {reg.ciudad ?? "—"} · onboarded {fmt(tec.onboarded_at)}
+              {tec.phone}
+              {tec.cedula && <> · cédula {tec.cedula}</>} · {reg.ciudad ?? "—"} ·
+              onboarded {fmt(tec.onboarded_at)}
             </div>
             {reg.especialidades && reg.especialidades.length > 0 && (
               <div className="text-sm text-slate-700 mt-2">
@@ -182,33 +259,110 @@ export default async function TecnicoDetailPage({
                 )}
               </div>
             )}
+            {tec.appsheet_row_id && (
+              <div className="text-xs text-slate-500 mt-1">
+                AppSheet Row ID: <span className="font-mono">{tec.appsheet_row_id}</span>
+                {tec.appsheet_synced_at && <> · synced {fmt(tec.appsheet_synced_at)}</>}
+              </div>
+            )}
           </div>
           <span className={`inline-block rounded-full px-3 py-1 text-sm ${stateClass}`}>
             {tec.candidate_state}
           </span>
         </div>
+
+        {/* Decision actions — gated on current state */}
+        {(canRevoke || canReopen) && (
+          <div className="mt-4 pt-4 border-t border-slate-100 flex gap-2 flex-wrap">
+            {canRevoke && (
+              <form action={submitDecision}>
+                <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+                <input type="hidden" name="prior_state" value={tec.candidate_state} />
+                <input type="hidden" name="dossier_id" value="" />
+                <input type="hidden" name="decision" value={"revoke" satisfies HrAction} />
+                <button
+                  type="submit"
+                  className="text-sm bg-rose-600 hover:bg-rose-700 text-white rounded-md px-4 py-1.5"
+                >
+                  Revocar
+                </button>
+              </form>
+            )}
+            {canReopen && (
+              <form action={submitDecision}>
+                <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+                <input type="hidden" name="prior_state" value={tec.candidate_state} />
+                <input type="hidden" name="dossier_id" value="" />
+                <input type="hidden" name="decision" value={"reopen" satisfies HrAction} />
+                <button
+                  type="submit"
+                  className="text-sm bg-amber-500 hover:bg-amber-600 text-white rounded-md px-4 py-1.5"
+                >
+                  Reabrir
+                </button>
+              </form>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Toño's qualification summary */}
-      {review.summary && (
-        <div className="card p-4 border-l-4 border-amber-300">
-          <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">
-            Resumen de Toño · {fmt(reviewEvent?.created_at)}
-          </div>
-          <div className="text-sm text-slate-800">{review.summary}</div>
+      {/* Add HR note */}
+      <div className="card p-3">
+        <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">
+          Agregar nota
         </div>
-      )}
+        <form action={appendHrNote} className="space-y-2">
+          <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+          <textarea
+            name="body"
+            placeholder="Observación, recordatorio, hand-off note..."
+            className="w-full text-sm border border-slate-200 rounded px-2 py-1 resize-none"
+            rows={2}
+            maxLength={2000}
+            required
+          />
+          <button
+            type="submit"
+            className="text-xs bg-slate-700 hover:bg-slate-800 text-white rounded px-3 py-1"
+          >
+            Agregar
+          </button>
+        </form>
+      </div>
+
+      {/* Timeline — dossiers + decisions + hr_notes + state events, reverse chronological */}
+      <div className="space-y-2">
+        <h2 className="font-semibold text-slate-900">
+          Línea de tiempo ({timeline.length})
+        </h2>
+        {timeline.length === 0 ? (
+          <div className="card p-3 text-sm text-slate-500">
+            Aún sin actividad de calificación.
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {timeline.map((entry, i) => (
+              <li key={i} className="card p-3 text-sm">
+                {entry.kind === "dossier" && renderDossier(entry.payload)}
+                {entry.kind === "decision" && renderDecision(entry.payload)}
+                {entry.kind === "note" && renderNote(entry.payload)}
+                {entry.kind === "event" && renderStateEvent(entry.payload)}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {/* Outbound WhatsApp messages */}
       <div className="space-y-2">
-        <h2 className="font-semibold text-slate-900">Mensajes enviados ({(outbound ?? []).length})</h2>
-        {(outbound ?? []).length === 0 ? (
+        <h2 className="font-semibold text-slate-900">Mensajes enviados ({outbound.length})</h2>
+        {outbound.length === 0 ? (
           <div className="card p-3 text-sm text-slate-500">
             Aún no se han enviado mensajes a este número.
           </div>
         ) : (
           <ul className="space-y-2">
-            {(outbound ?? []).map((m) => {
+            {outbound.map((m) => {
               const statusClass =
                 m.status === "sent"
                   ? "text-emerald-700"
@@ -243,12 +397,12 @@ export default async function TecnicoDetailPage({
 
       {/* Postulaciones */}
       <div className="space-y-2">
-        <h2 className="font-semibold text-slate-900">Postulaciones ({(postulaciones ?? []).length})</h2>
-        {(postulaciones ?? []).length === 0 ? (
+        <h2 className="font-semibold text-slate-900">Postulaciones ({postulaciones.length})</h2>
+        {postulaciones.length === 0 ? (
           <div className="card p-3 text-sm text-slate-500">Sin postulaciones aún.</div>
         ) : (
           <ul className="space-y-1">
-            {(postulaciones ?? []).map((p) => (
+            {postulaciones.map((p) => (
               <li
                 key={p.id}
                 className="card p-3 text-sm flex items-center justify-between"
@@ -282,12 +436,12 @@ export default async function TecnicoDetailPage({
 
       {/* Contratos */}
       <div className="space-y-2">
-        <h2 className="font-semibold text-slate-900">Contratos ({(contratos ?? []).length})</h2>
-        {(contratos ?? []).length === 0 ? (
+        <h2 className="font-semibold text-slate-900">Contratos ({contratos.length})</h2>
+        {contratos.length === 0 ? (
           <div className="card p-3 text-sm text-slate-500">Sin contratos aún.</div>
         ) : (
           <ul className="space-y-1">
-            {(contratos ?? []).map((c) => (
+            {contratos.map((c) => (
               <li
                 key={c.id}
                 className="card p-3 text-sm flex items-center justify-between"
@@ -310,13 +464,13 @@ export default async function TecnicoDetailPage({
       </div>
 
       {/* Evaluaciones */}
-      {(evaluations ?? []).length > 0 && (
+      {evaluations.length > 0 && (
         <div className="space-y-2">
           <h2 className="font-semibold text-slate-900">
-            Evaluaciones ({evaluations!.length})
+            Evaluaciones ({evaluations.length})
           </h2>
           <ul className="space-y-1">
-            {evaluations!.map((e) => (
+            {evaluations.map((e) => (
               <li key={e.id} className="card p-3 text-sm">
                 <div className="text-xs text-slate-500">
                   OT {e.ot_id.slice(0, 12)} · evaluador {e.evaluator} · {fmt(e.created_at)}
@@ -343,10 +497,10 @@ export default async function TecnicoDetailPage({
       {/* Raw event log */}
       <details className="card p-3">
         <summary className="cursor-pointer font-semibold text-slate-900">
-          Bitácora ({(events ?? []).length})
+          Bitácora ({events.length})
         </summary>
         <ul className="mt-2 space-y-1 text-xs">
-          {(events ?? []).map((e, i) => (
+          {events.map((e, i) => (
             <li key={i} className="border-t border-slate-100 pt-1">
               <div className="flex justify-between">
                 <span className="font-medium text-slate-700">{e.type}</span>
@@ -362,6 +516,145 @@ export default async function TecnicoDetailPage({
           ))}
         </ul>
       </details>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Timeline renderers
+// ---------------------------------------------------------------------------
+
+function renderDossier(payload: unknown): JSX.Element {
+  const d = payload as {
+    id: string;
+    created_at: string;
+    tono_recommendation: TonoRecommendation;
+    tono_confidence: number;
+    tono_reasoning: string;
+    prompt_sha: string | null;
+    cedula: string;
+    schema_version: number;
+    payload: unknown;
+  };
+  return (
+    <div>
+      <div className="flex justify-between text-xs text-slate-500">
+        <span className="font-semibold text-amber-700 uppercase tracking-wide">
+          Dossier · v{d.schema_version}
+        </span>
+        <span>{fmt(d.created_at)}</span>
+      </div>
+      <div className="mt-1 text-slate-800">
+        Toño:{" "}
+        <span className="font-medium">{d.tono_recommendation}</span> ({d.tono_confidence.toFixed(2)})
+      </div>
+      <div className="text-slate-700 mt-1 whitespace-pre-wrap">{d.tono_reasoning}</div>
+      <div className="text-[10px] text-slate-500 mt-1">
+        cédula {d.cedula}
+        {d.prompt_sha && <> · prompt_sha {d.prompt_sha.slice(0, 12)}</>}
+      </div>
+      <details className="mt-1 text-[11px] text-slate-600">
+        <summary className="cursor-pointer">payload completo</summary>
+        <pre className="mt-1 whitespace-pre-wrap break-all">
+          {JSON.stringify(d.payload, null, 2)}
+        </pre>
+      </details>
+    </div>
+  );
+}
+
+function renderDecision(payload: unknown): JSX.Element {
+  const d = payload as {
+    id: string;
+    decided_at: string;
+    decided_by: string;
+    decision: HrAction;
+    prior_state: CandidateState;
+    resulting_state: CandidateState;
+    tono_recommendation_at_decision_time: TonoRecommendation | null;
+    agreed_with_tono: boolean | null;
+    hr_reasoning: string | null;
+    dossier_id: string | null;
+  };
+  const agreement =
+    d.agreed_with_tono === true ? "✓" : d.agreed_with_tono === false ? "✗" : "—";
+  const agreementClass =
+    d.agreed_with_tono === true
+      ? "text-emerald-700"
+      : d.agreed_with_tono === false
+      ? "text-rose-700"
+      : "text-slate-500";
+  return (
+    <div>
+      <div className="flex justify-between text-xs text-slate-500">
+        <span className="font-semibold text-emerald-700 uppercase tracking-wide">
+          Decisión HR
+        </span>
+        <span>{fmt(d.decided_at)}</span>
+      </div>
+      <div className="mt-1 text-slate-800">
+        <span className="font-medium">{d.decision}</span> · {d.prior_state} →{" "}
+        {d.resulting_state}{" "}
+        {d.tono_recommendation_at_decision_time && (
+          <span className="text-xs text-slate-500">
+            (Toño sugirió {d.tono_recommendation_at_decision_time}){" "}
+            <span className={agreementClass}>{agreement}</span>
+          </span>
+        )}
+      </div>
+      <div className="text-[10px] text-slate-500">{d.decided_by}</div>
+      {d.hr_reasoning && (
+        <div className="text-slate-700 mt-1 italic whitespace-pre-wrap">
+          “{d.hr_reasoning}”
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderNote(payload: unknown): JSX.Element {
+  const n = payload as {
+    id: string;
+    created_at: string;
+    hr_user: string;
+    body: string;
+    dossier_id: string | null;
+  };
+  return (
+    <div>
+      <div className="flex justify-between text-xs text-slate-500">
+        <span className="font-semibold text-slate-700 uppercase tracking-wide">
+          Nota HR
+        </span>
+        <span>{fmt(n.created_at)}</span>
+      </div>
+      <div className="text-[10px] text-slate-500">{n.hr_user}</div>
+      <div className="text-slate-800 mt-1 whitespace-pre-wrap">{n.body}</div>
+    </div>
+  );
+}
+
+function renderStateEvent(payload: unknown): JSX.Element {
+  const e = payload as {
+    type: string;
+    actor: string | null;
+    meta: unknown;
+    created_at: string;
+  };
+  return (
+    <div>
+      <div className="flex justify-between text-xs text-slate-500">
+        <span className="font-semibold text-slate-700 uppercase tracking-wide">
+          {e.type}
+        </span>
+        <span>{fmt(e.created_at)}</span>
+      </div>
+      {e.actor && <div className="text-[10px] text-slate-500">{e.actor}</div>}
+      {e.meta != null && (
+        <pre className="text-[11px] text-slate-600 whitespace-pre-wrap break-all mt-1">
+          {JSON.stringify(e.meta, null, 2)}
+        </pre>
+      )}
     </div>
   );
 }
