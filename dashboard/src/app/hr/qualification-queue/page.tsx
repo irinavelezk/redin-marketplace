@@ -1,17 +1,21 @@
 // HR qualification queue — workers with candidate_state in (pending, needs_call).
-// Approve / reject / schedule call. Each action posts to submitDecision in
-// @/lib/decisions, which writes a candidate_decisions row + flips state via
-// compare-and-set + enqueues WhatsApp + records the agreement metric.
+// Per docs/architecture/onboarding-contracts.md §3.5 (graduated autonomy):
+//   1. Recommendation badge (green/red/amber)
+//   2. Raw confidence (0.78, NOT bucketed)
+//   3. "why?" expand revealing tono_reasoning + gaps
+//   4. Deterministic sort: needs_call rows → pending+recommend_call FIFO
+//      → pending+recommend_approve by confidence DESC → pending+recommend_reject
+//      by confidence DESC
+//   5. One-click decisions are still HR's: decided_by = hr:<email>, never
+//      "[Toño-approved]" attribution.
+//   6. HR can disagree with one click — agreed_with_tono captures divergence.
+//   7. hr_reasoning textarea (optional, encouraged when diverging from Toño).
 //
-// Commit 1 keeps the existing card layout + minimal queries; commit 2 rebuilds
-// the §3.5 UX (recommendation badge, raw confidence, why-expand, sort,
-// hr_notes thread). The dossier_id captured here flows into submitDecision so
-// the agreement signal is preserved as soon as the queue starts surfacing
-// dossier-bearing candidates.
+// Plus per §5.2: hr_notes thread per candidate, append-only, reverse-chronological.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-import { submitDecision } from "@/lib/decisions";
-import type { CandidateState } from "@redin/shared";
+import { submitDecision, appendHrNote } from "@/lib/decisions";
+import type { CandidateState, TonoRecommendation } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 
@@ -22,10 +26,6 @@ interface RegisteredMeta {
   ciudad?: string;
   especialidades?: string[];
   modalidad?: string;
-}
-
-interface ReviewMeta {
-  summary?: string;
 }
 
 function parseRegisteredMeta(meta: unknown): RegisteredMeta {
@@ -41,17 +41,99 @@ function parseRegisteredMeta(meta: unknown): RegisteredMeta {
   return out;
 }
 
-function parseReviewMeta(meta: unknown): ReviewMeta {
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return {};
-  const m = meta as Record<string, unknown>;
-  if (typeof m.summary === "string") return { summary: m.summary };
-  return {};
+interface DossierSummary {
+  id: string;
+  tono_recommendation: TonoRecommendation;
+  tono_confidence: number;
+  tono_reasoning: string;
+  cedula: string;
+  ciudad_base: string | null;
+  categorias: string[];
+  subcategorias: string[];
+  gaps: string[];
+  created_at: string;
 }
 
-const CANDIDATE_STATE_CLASS: Partial<Record<CandidateState, string>> = {
-  pending: "text-amber-600",
-  needs_call: "text-violet-700 font-medium",
-};
+interface DossierPayloadShape {
+  ciudad_base?: unknown;
+  categorias_principales?: unknown;
+  subcategorias?: unknown;
+  gaps?: unknown;
+}
+
+function summarizeDossierPayload(payload: unknown): {
+  ciudad_base: string | null;
+  categorias: string[];
+  subcategorias: string[];
+  gaps: string[];
+} {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { ciudad_base: null, categorias: [], subcategorias: [], gaps: [] };
+  }
+  const p = payload as DossierPayloadShape;
+  const ciudad =
+    typeof p.ciudad_base === "string" ? (p.ciudad_base as string) : null;
+  const cats = Array.isArray(p.categorias_principales)
+    ? (p.categorias_principales as unknown[]).filter((x): x is string => typeof x === "string")
+    : [];
+  const subs = Array.isArray(p.subcategorias)
+    ? (p.subcategorias as unknown[]).filter((x): x is string => typeof x === "string")
+    : [];
+  const gaps = Array.isArray(p.gaps)
+    ? (p.gaps as unknown[]).filter((x): x is string => typeof x === "string")
+    : [];
+  return { ciudad_base: ciudad, categorias: cats, subcategorias: subs, gaps };
+}
+
+function recommendationBadge(rec: TonoRecommendation): {
+  label: string;
+  className: string;
+} {
+  switch (rec) {
+    case "recommend_approve":
+      return {
+        label: "Toño sugiere aprobar",
+        className: "bg-emerald-100 text-emerald-800 border-emerald-300",
+      };
+    case "recommend_reject":
+      return {
+        label: "Toño sugiere rechazar",
+        className: "bg-rose-100 text-rose-800 border-rose-300",
+      };
+    case "recommend_call":
+      return {
+        label: "Toño sugiere llamar",
+        className: "bg-amber-100 text-amber-800 border-amber-300",
+      };
+  }
+}
+
+function fmtTime(iso: string): string {
+  return new Date(iso).toLocaleString("es-CO");
+}
+
+// Deterministic sort key per §3.5 #4. Lower tuple = higher in queue.
+function sortKey(args: {
+  candidate_state: CandidateState;
+  onboarded_at: string;
+  rec: TonoRecommendation | null;
+  conf: number;
+}): [number, number, number] {
+  const { candidate_state, onboarded_at, rec, conf } = args;
+  const ts = new Date(onboarded_at).getTime();
+  // Bucket 0: needs_call STATE rows — HR scheduled a call; act on it.
+  if (candidate_state === "needs_call") return [0, ts, 0];
+  // Bucket 1: pending + recommend_call — FIFO (oldest first) so workers don't
+  // sit forgotten in the call queue. Confidence ignored per §3.5.
+  if (rec === "recommend_call") return [1, ts, 0];
+  // Bucket 2: pending + recommend_approve — confidence DESC (high-conf at top).
+  if (rec === "recommend_approve") return [2, -conf, 0];
+  // Bucket 3: pending + recommend_reject — confidence DESC (high-conf at the
+  // bottom of the queue; HR can batch through).
+  if (rec === "recommend_reject") return [3, -conf, 0];
+  // Bucket 4: pending without dossier (shouldn't happen — agent always submits).
+  return [4, ts, 0];
+}
 
 export default async function HrQualificationQueuePage() {
   const auth = serverClientBoundToCookies();
@@ -60,20 +142,17 @@ export default async function HrQualificationQueuePage() {
 
   const supa = serviceClient();
 
-  // Per contract §3.5: queue surfaces candidate_state ∈ {pending, needs_call}
-  // only. screening = mid-conversation; approved/rejected/withdrawn/revoked =
-  // out of HR queue.
   const { data: tecnicos } = await supa
     .from("tecnicos_extended")
     .select("*")
     .in("candidate_state", ["pending", "needs_call"])
-    .order("onboarded_at", { ascending: false })
     .limit(100);
 
   const ids = (tecnicos ?? []).map((t) => t.tecnico_id);
 
-  // Fetch related context per tecnico in parallel.
-  const [regEventsRes, reviewEventsRes, dossiersRes] = ids.length
+  // TODO(scale): two-query stitch is O(N+latest-dossier-per-N). Pilot scale
+  // (~50 candidates) is fine; revisit with a Postgres view or RPC at >5k.
+  const [regEventsRes, dossiersRes, notesRes] = ids.length
     ? await Promise.all([
         supa
           .from("eventos")
@@ -82,14 +161,13 @@ export default async function HrQualificationQueuePage() {
           .in("entity_id", ids)
           .order("created_at", { ascending: false }),
         supa
-          .from("eventos")
-          .select("entity_id, meta, created_at")
-          .eq("type", "qualification_review_requested")
-          .in("entity_id", ids)
+          .from("candidate_dossiers")
+          .select("*")
+          .in("tecnico_id", ids)
           .order("created_at", { ascending: false }),
         supa
-          .from("candidate_dossiers")
-          .select("id, tecnico_id, tono_recommendation, tono_confidence, created_at")
+          .from("hr_notes")
+          .select("*")
           .in("tecnico_id", ids)
           .order("created_at", { ascending: false }),
       ])
@@ -100,25 +178,54 @@ export default async function HrQualificationQueuePage() {
     if (!e.entity_id || regByTec.has(e.entity_id)) continue;
     regByTec.set(e.entity_id, parseRegisteredMeta(e.meta));
   }
-  const reviewByTec = new Map<string, ReviewMeta>();
-  for (const e of reviewEventsRes.data ?? []) {
-    if (!e.entity_id || reviewByTec.has(e.entity_id)) continue;
-    reviewByTec.set(e.entity_id, parseReviewMeta(e.meta));
-  }
-  // Latest dossier per tecnico_id (the one HR is reviewing — captured in the
-  // form so submitDecision can snapshot tono_recommendation_at_decision_time).
-  const latestDossierByTec = new Map<
-    string,
-    { id: string; tono_recommendation: string; tono_confidence: number }
-  >();
+
+  // Latest dossier per tecnico_id.
+  const latestDossierByTec = new Map<string, DossierSummary>();
   for (const d of dossiersRes.data ?? []) {
     if (latestDossierByTec.has(d.tecnico_id)) continue;
+    const sum = summarizeDossierPayload(d.payload);
     latestDossierByTec.set(d.tecnico_id, {
       id: d.id,
-      tono_recommendation: d.tono_recommendation,
+      tono_recommendation: d.tono_recommendation as TonoRecommendation,
       tono_confidence: Number(d.tono_confidence),
+      tono_reasoning: d.tono_reasoning,
+      cedula: d.cedula,
+      ciudad_base: sum.ciudad_base,
+      categorias: sum.categorias,
+      subcategorias: sum.subcategorias,
+      gaps: sum.gaps,
+      created_at: d.created_at,
     });
   }
+
+  // hr_notes grouped by tecnico_id (already reverse-chronological).
+  const notesByTec = new Map<string, typeof notesRes.data>();
+  for (const n of notesRes.data ?? []) {
+    const arr = notesByTec.get(n.tecnico_id) ?? [];
+    arr.push(n);
+    notesByTec.set(n.tecnico_id, arr);
+  }
+
+  // Sort per §3.5 #4.
+  const sorted = [...(tecnicos ?? [])].sort((a, b) => {
+    const da = latestDossierByTec.get(a.tecnico_id);
+    const db_ = latestDossierByTec.get(b.tecnico_id);
+    const ka = sortKey({
+      candidate_state: a.candidate_state,
+      onboarded_at: a.onboarded_at,
+      rec: da?.tono_recommendation ?? null,
+      conf: da?.tono_confidence ?? 0,
+    });
+    const kb = sortKey({
+      candidate_state: b.candidate_state,
+      onboarded_at: b.onboarded_at,
+      rec: db_?.tono_recommendation ?? null,
+      conf: db_?.tono_confidence ?? 0,
+    });
+    if (ka[0] !== kb[0]) return ka[0] - kb[0];
+    if (ka[1] !== kb[1]) return ka[1] - kb[1];
+    return ka[2] - kb[2];
+  });
 
   return (
     <div className="space-y-6">
@@ -134,119 +241,199 @@ export default async function HrQualificationQueuePage() {
         </div>
       </div>
       <p className="text-sm text-slate-600">
-        Técnicos esperando aprobación. <strong>pending</strong> = Toño ya entregó
-        el dossier, listo para HR. <strong>needs_call</strong> = pediste una
-        llamada; vuelve aquí después de hacerla y aprueba o rechaza.
+        Técnicos esperando aprobación. Toño deja una recomendación; HR decide.
+        El badge muestra qué sugiere y con qué confianza; clic en{" "}
+        <em>¿por qué?</em> para leer el razonamiento completo.
       </p>
 
-      {(tecnicos ?? []).length === 0 ? (
+      {sorted.length === 0 ? (
         <div className="card p-4 text-sm text-slate-500">
           No hay técnicos en revisión. Vuelve cuando alguien nuevo se registre.
         </div>
       ) : (
         <ul className="space-y-3">
-          {(tecnicos ?? []).map((tec) => {
+          {sorted.map((tec) => {
             const reg = regByTec.get(tec.tecnico_id);
-            const review = reviewByTec.get(tec.tecnico_id);
             const dossier = latestDossierByTec.get(tec.tecnico_id);
-            const stateClass =
-              CANDIDATE_STATE_CLASS[tec.candidate_state] ?? "text-slate-600";
+            const notes = notesByTec.get(tec.tecnico_id) ?? [];
+            const badge = dossier ? recommendationBadge(dossier.tono_recommendation) : null;
+
             return (
               <li key={tec.tecnico_id} className="card p-4">
                 <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="font-medium text-slate-900">
-                      {reg?.nombre ?? "(sin nombre)"} ·{" "}
+                  <div className="min-w-0 flex-1">
+                    {/* Header */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Link
+                        href={`/hr/tecnicos/${encodeURIComponent(tec.tecnico_id)}`}
+                        className="font-medium text-slate-900 hover:text-amber-700"
+                      >
+                        {reg?.nombre ?? "(sin nombre)"}
+                      </Link>
                       <span className="text-slate-500 font-normal">
-                        {reg?.ciudad ?? "—"}
+                        · {dossier?.ciudad_base ?? reg?.ciudad ?? "—"}
                       </span>
+                      {tec.candidate_state === "needs_call" && (
+                        <span className="text-xs bg-violet-100 text-violet-800 rounded-full px-2 py-0.5">
+                          📞 cita pendiente
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5">
-                      {tec.phone} · onboarded{" "}
-                      {new Date(tec.onboarded_at).toLocaleString("es-CO")} ·{" "}
-                      <span className={stateClass}>{tec.candidate_state}</span>
+                      {tec.phone}
+                      {dossier && <> · cédula {dossier.cedula}</>} · onboarded{" "}
+                      {fmtTime(tec.onboarded_at)}
                     </div>
-                    {reg?.especialidades && reg.especialidades.length > 0 && (
+
+                    {/* Recommendation badge + raw confidence + why-expand */}
+                    {dossier && badge && (
+                      <div className="mt-3 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span
+                            className={`text-xs rounded-full px-2 py-0.5 border ${badge.className}`}
+                          >
+                            {badge.label}
+                          </span>
+                          <span className="text-xs text-slate-600 tabular-nums">
+                            ({dossier.tono_confidence.toFixed(2)})
+                          </span>
+                          <details className="text-xs">
+                            <summary className="cursor-pointer text-slate-600 hover:text-slate-900">
+                              ¿por qué?
+                            </summary>
+                            <div className="mt-1 text-slate-700 whitespace-pre-wrap border-l-2 border-slate-200 pl-2">
+                              {dossier.tono_reasoning}
+                              {dossier.gaps.length > 0 && (
+                                <div className="mt-2">
+                                  <div className="text-slate-500 uppercase tracking-wide text-[10px] mb-0.5">
+                                    Vacíos detectados
+                                  </div>
+                                  <ul className="list-disc list-inside text-slate-600">
+                                    {dossier.gaps.map((g, i) => (
+                                      <li key={i}>{g}</li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          </details>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Categorías + subcategorías */}
+                    {dossier && (dossier.categorias.length > 0 || dossier.subcategorias.length > 0) && (
                       <div className="text-sm text-slate-700 mt-2">
-                        <span className="text-slate-500">Especialidades: </span>
-                        {reg.especialidades.join(", ")}
-                        {reg.modalidad && (
-                          <span className="text-slate-500"> · {reg.modalidad}</span>
+                        {dossier.categorias.length > 0 && (
+                          <div>
+                            <span className="text-slate-500">Categorías: </span>
+                            {dossier.categorias.join(", ")}
+                          </div>
+                        )}
+                        {dossier.subcategorias.length > 0 && (
+                          <div className="text-xs text-slate-500 mt-0.5">
+                            {dossier.subcategorias.join(" · ")}
+                          </div>
                         )}
                       </div>
                     )}
-                    {dossier && (
-                      <div className="text-xs text-slate-600 mt-2">
-                        Toño sugiere{" "}
-                        <span className="font-medium text-slate-800">
-                          {dossier.tono_recommendation}
-                        </span>{" "}
-                        ({dossier.tono_confidence.toFixed(2)})
-                      </div>
-                    )}
-                    {review?.summary && (
-                      <div className="text-sm text-slate-700 mt-2 border-l-2 border-amber-300 pl-3">
-                        <div className="text-xs uppercase tracking-wide text-slate-500 mb-0.5">
-                          Toño
+
+                    {/* HR notes thread */}
+                    {notes.length > 0 && (
+                      <div className="mt-3 space-y-1">
+                        <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                          Notas HR ({notes.length})
                         </div>
-                        {review.summary}
+                        <ul className="space-y-1">
+                          {notes.map((n) => (
+                            <li
+                              key={n.id}
+                              className="text-xs text-slate-700 bg-slate-50 rounded px-2 py-1"
+                            >
+                              <div className="text-[10px] text-slate-500">
+                                {n.hr_user} · {fmtTime(n.created_at)}
+                              </div>
+                              <div className="whitespace-pre-wrap">{n.body}</div>
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     )}
-                  </div>
-                  <div className="flex flex-col gap-1 shrink-0">
-                    <form action={submitDecision}>
+
+                    {/* Add note form */}
+                    <form action={appendHrNote} className="mt-3 flex gap-2">
                       <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
-                      <input type="hidden" name="prior_state" value={tec.candidate_state} />
-                      <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
-                      <input type="hidden" name="decision" value="approve" />
+                      <input
+                        type="text"
+                        name="body"
+                        placeholder="Agregar nota..."
+                        className="flex-1 text-xs border border-slate-200 rounded px-2 py-1"
+                        maxLength={2000}
+                        required
+                      />
                       <button
                         type="submit"
-                        className="text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-md px-3 py-1 w-32"
+                        className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded px-2 py-1"
                       >
-                        Aprobar
+                        Agregar
                       </button>
                     </form>
+                  </div>
+
+                  {/* Decision actions + hr_reasoning. Single form with multi-button:
+                      the clicked button's name/value (decision) is what's posted.
+                      VERIFY GATE (per Stream B plan): before promoting commit 2 to
+                      prod, click each button against a real seed candidate in dev
+                      and verify candidate_decisions.decision matches each click.
+                      If FormData drops the clicked button's value, switch to
+                      per-button formAction. */}
+                  <form action={submitDecision} className="flex flex-col gap-2 shrink-0 w-44">
+                    <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
+                    <input type="hidden" name="prior_state" value={tec.candidate_state} />
+                    <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
+                    <textarea
+                      name="hr_reasoning"
+                      placeholder="¿Por qué? (opcional)"
+                      className="text-xs border border-slate-200 rounded px-2 py-1 resize-none"
+                      rows={2}
+                    />
+                    <button
+                      type="submit"
+                      name="decision"
+                      value="approve"
+                      className="w-full text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-md px-3 py-1"
+                    >
+                      Aprobar
+                    </button>
                     {tec.candidate_state === "pending" && (
-                      <form action={submitDecision}>
-                        <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
-                        <input type="hidden" name="prior_state" value={tec.candidate_state} />
-                        <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
-                        <input type="hidden" name="decision" value="schedule_call" />
-                        <button
-                          type="submit"
-                          className="text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-md px-3 py-1 w-32"
-                        >
-                          Pedir llamada
-                        </button>
-                      </form>
+                      <button
+                        type="submit"
+                        name="decision"
+                        value="schedule_call"
+                        className="w-full text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-md px-3 py-1"
+                      >
+                        Pedir llamada
+                      </button>
                     )}
                     {tec.candidate_state === "needs_call" && (
-                      <form action={submitDecision}>
-                        <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
-                        <input type="hidden" name="prior_state" value={tec.candidate_state} />
-                        <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
-                        <input type="hidden" name="decision" value="unschedule_call" />
-                        <button
-                          type="submit"
-                          className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md px-3 py-1 w-32"
-                        >
-                          Quitar llamada
-                        </button>
-                      </form>
-                    )}
-                    <form action={submitDecision}>
-                      <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
-                      <input type="hidden" name="prior_state" value={tec.candidate_state} />
-                      <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
-                      <input type="hidden" name="decision" value="reject" />
                       <button
                         type="submit"
-                        className="text-xs border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md px-3 py-1 w-32"
+                        name="decision"
+                        value="unschedule_call"
+                        className="w-full text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md px-3 py-1"
                       >
-                        Rechazar
+                        Quitar llamada
                       </button>
-                    </form>
-                  </div>
+                    )}
+                    <button
+                      type="submit"
+                      name="decision"
+                      value="reject"
+                      className="w-full text-xs border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md px-3 py-1"
+                    >
+                      Rechazar
+                    </button>
+                  </form>
                 </div>
               </li>
             );
