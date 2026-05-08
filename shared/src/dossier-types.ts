@@ -404,6 +404,46 @@ export interface SubmitCandidateDossierOutput {
 // ---- find_by_cedula ----
 // Cedula identity lookup so Toño can recognize a returning worker on a new
 // phone (decision 6). Auth-free; agent calls it after gathering cedula.
+//
+// The output carries a `next_action` directive so the agent's branch handling
+// is encoded in the tool result, not just in the prompt. The prompt's "REGLA
+// ABSOLUTA" requires the agent to obey next_action over conversation momentum.
+
+/**
+ * What the agent MUST do based on the lookup result. Six values:
+ *
+ *   resume_screening                — found in screening|withdrawn; pick up
+ *                                      the thread, finish gathering missing
+ *                                      fields, submit_candidate_dossier when
+ *                                      ready.
+ *   tell_user_already_in_queue      — found in pending; tell worker their
+ *                                      perfil is in HR queue and stop screening.
+ *   tell_user_team_will_call        — found in needs_call; tell worker HR will
+ *                                      call them; stop screening.
+ *   tell_user_already_approved      — found in approved; tell worker they're
+ *                                      already registered and approved; stop.
+ *   tell_user_was_rejected          — found in rejected|revoked; escalate via
+ *                                      escalate_to_hr (with reason
+ *                                      "rejected_returning") after telling
+ *                                      the worker. Do NOT auto-reopen.
+ *   check_legacy_name_then_proceed  — found=false. The cedula isn't on any
+ *                                      row, but a legacy worker may be
+ *                                      writing from a new phone (their
+ *                                      legacy row has cedula=NULL). The
+ *                                      agent MUST call find_legacy_by_name
+ *                                      with the worker's full name (already
+ *                                      captured by register_tecnico) ONCE
+ *                                      before resuming screening. The chain
+ *                                      continues via find_legacy_by_name's
+ *                                      own next_action.
+ */
+export type FindByCedulaNextAction =
+  | "resume_screening"
+  | "tell_user_already_in_queue"
+  | "tell_user_team_will_call"
+  | "tell_user_already_approved"
+  | "tell_user_was_rejected"
+  | "check_legacy_name_then_proceed";
 
 export interface FindByCedulaInput {
   cedula: string;
@@ -417,6 +457,10 @@ export interface FindByCedulaOutput {
   last_phone?: string;
   /** From the latest dossier submission, if any. */
   nombre?: string;
+  /** ALWAYS populated. Encodes the branch decision so the agent doesn't have to derive it. */
+  next_action: FindByCedulaNextAction;
+  /** A short Spanish phrase the agent can paraphrase. Always present; matches next_action. */
+  suggested_reply: string;
 }
 
 // ---- mark_candidate_withdrawn ----

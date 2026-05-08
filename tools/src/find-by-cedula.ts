@@ -3,22 +3,52 @@
 // the only worker identity, phones are disposable).
 //
 // Auth-free. No write. The agent calls this AFTER capturing a cedula, BEFORE
-// submit_candidate_dossier. If the result is `found:true`, the agent should
-// branch on candidate_state per the contract:
-//   approved   -> "ya estás aprobado" + nothing
-//   pending    -> "ya estás registrado, en cola" + escalate if asked
-//   needs_call -> tell worker HR will call
-//   rejected   -> escalate_to_hr (no auto-reopen)
-//   withdrawn  -> resume; submit_candidate_dossier merges
-//   revoked    -> escalate_to_hr (terminal)
-//   screening  -> mid-flow on different phone; merge happens at submission
+// submit_candidate_dossier. The output carries a `next_action` directive that
+// the agent MUST obey (per the prompt's REGLA ABSOLUTA on tool-driven
+// branching) — see the FindByCedulaNextAction docstring for the full mapping.
 
 import type { ToolContext } from "./context";
 import { ok, err, type ToolResult } from "./types";
 import type {
+  CandidateState,
   FindByCedulaInput,
+  FindByCedulaNextAction,
   FindByCedulaOutput,
 } from "@redin/shared/dossier-types";
+
+const STATE_TO_NEXT_ACTION: Record<
+  CandidateState,
+  { next_action: FindByCedulaNextAction; suggested_reply: string }
+> = {
+  screening: {
+    next_action: "resume_screening",
+    suggested_reply: "Bienvenido de vuelta, sigamos donde quedamos.",
+  },
+  withdrawn: {
+    next_action: "resume_screening",
+    suggested_reply: "Bienvenido de vuelta, sigamos donde quedamos.",
+  },
+  pending: {
+    next_action: "tell_user_already_in_queue",
+    suggested_reply: "Ya estamos validando tu perfil, te avisamos pronto.",
+  },
+  needs_call: {
+    next_action: "tell_user_team_will_call",
+    suggested_reply: "El equipo va a llamarte pronto, mantente atento.",
+  },
+  approved: {
+    next_action: "tell_user_already_approved",
+    suggested_reply: "Ya estás registrado y aprobado con Redin.",
+  },
+  rejected: {
+    next_action: "tell_user_was_rejected",
+    suggested_reply: "Hubo una decisión previa; te conecto con el equipo.",
+  },
+  revoked: {
+    next_action: "tell_user_was_rejected",
+    suggested_reply: "Hubo una decisión previa; te conecto con el equipo.",
+  },
+};
 
 function normalizeCedula(raw: string): string {
   return raw.replace(/[^\d]/g, "");
@@ -52,18 +82,39 @@ export async function findByCedula(
     });
   }
 
-  if (!data) return ok({ found: false });
+  if (!data) {
+    // Cedula not in tecnicos_extended. Two possibilities the agent must
+    // resolve before resuming screening:
+    //   1. cold worker (real not-found)
+    //   2. legacy worker contacting from a new phone — their tecnicos_extended
+    //      row exists with cedula=NULL, so cedula lookup misses. The legacy
+    //      bootstrap event has the name; find_legacy_by_name finds it.
+    // Encoded as a two-step next_action: the agent MUST call
+    // find_legacy_by_name next; that tool's own next_action will tell the
+    // agent whether to escalate (similarity hit) or proceed (no match).
+    return ok({
+      found: false,
+      next_action: "check_legacy_name_then_proceed",
+      suggested_reply:
+        "Cédula nueva. Antes de seguir, déjame confirmar el nombre con find_legacy_by_name.",
+    });
+  }
 
   // Pull display name from the same priority chain identify_user uses:
   // legacy bootstrap -> registered -> mirror.
   const nombre = await loadNombre(ctx, data.tecnico_id);
 
+  const state = data.candidate_state as CandidateState;
+  const branch = STATE_TO_NEXT_ACTION[state];
+
   return ok({
     found: true,
     tecnico_id: data.tecnico_id,
-    candidate_state: data.candidate_state as FindByCedulaOutput["candidate_state"],
+    candidate_state: state,
     last_phone: data.phone,
     nombre: nombre ?? undefined,
+    next_action: branch.next_action,
+    suggested_reply: branch.suggested_reply,
   });
 }
 

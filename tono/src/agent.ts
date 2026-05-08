@@ -504,6 +504,14 @@ export async function handleMessage(
   //     conversation keeps moving.
   //   - no tool succeeded (or no tools at all) -> reuse the same hold message
   //     the max-iterations branch produces, signalling "let me check".
+  //
+  // TODO INVESTIGATE post-pilot: Haiku 4.5 occasionally returns empty text
+  // after register_tecnico / complete_legacy_profile tool results. The
+  // fallback below handles user-facing impact correctly (no empty bubble),
+  // but the root cause is unknown — could be max_tokens cutoff inside the
+  // tool-use loop, a quirk of how the SDK reports usage on no-text turns,
+  // or a model behavior under tool_result blocks. Not blocking the live
+  // pilot; revisit when we have a reproducible test case in isolation.
   if (!modelUnavailable && reply.trim() === "" && turn) {
     const anyOk = turn.toolCallsMade.some((tc) => tc.result.ok);
     if (anyOk) {

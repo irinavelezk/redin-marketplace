@@ -7,10 +7,21 @@
 // reason='possible_legacy_reconciliation' — DO NOT auto-merge.
 //
 // Pure read. Auth-free. Loads at most ~49 candidate rows in practice.
+//
+// Returns a next_action so the chain that started in find_by_cedula
+// (next_action='check_legacy_name_then_proceed') terminates here:
+//   matches.length > 0 with similarity >= 0.80
+//     -> next_action='escalate_legacy_reconciliation' (call escalate_to_hr)
+//   otherwise
+//     -> next_action='proceed_with_screening' (real cold worker; resume CASE B)
 
 import type { ToolContext } from "./context";
 import { ok, err, type ToolResult } from "./types";
 import { findMatches, type NameMatch } from "./legacy-name-match";
+
+export type FindLegacyByNameNextAction =
+  | "escalate_legacy_reconciliation"
+  | "proceed_with_screening";
 
 export interface FindLegacyByNameInput {
   name: string;
@@ -18,7 +29,11 @@ export interface FindLegacyByNameInput {
 
 export interface FindLegacyByNameOutput {
   matches: NameMatch[];
+  next_action: FindLegacyByNameNextAction;
+  suggested_reply: string;
 }
+
+const ESCALATION_SIMILARITY_THRESHOLD = 0.8;
 
 export async function findLegacyByName(
   ctx: ToolContext,
@@ -29,8 +44,13 @@ export async function findLegacyByName(
     return err("name required", { code: "invalid_input" });
   }
   if (name.length < 2) {
-    // Too short to match meaningfully; refuse.
-    return ok({ matches: [] });
+    // Too short to match meaningfully; signal "no match, proceed".
+    return ok({
+      matches: [],
+      next_action: "proceed_with_screening",
+      suggested_reply:
+        "Nombre muy corto para verificar legacy. Sigamos con la calificación normal.",
+    });
   }
 
   // Pull tecnico_ids of approved+incomplete legacy workers.
@@ -47,7 +67,12 @@ export async function findLegacyByName(
     });
   }
   if (!rows || rows.length === 0) {
-    return ok({ matches: [] });
+    return ok({
+      matches: [],
+      next_action: "proceed_with_screening",
+      suggested_reply:
+        "No hay técnicos legacy que se parezcan. Sigamos con la calificación normal.",
+    });
   }
 
   // Pull display names from the legacy bootstrap eventos meta.
@@ -75,5 +100,21 @@ export async function findLegacyByName(
   }
 
   const matches = findMatches(name, candidates);
-  return ok({ matches });
+  const hasStrongHit = matches.some(
+    (m) => m.similarity >= ESCALATION_SIMILARITY_THRESHOLD
+  );
+  if (hasStrongHit) {
+    return ok({
+      matches,
+      next_action: "escalate_legacy_reconciliation",
+      suggested_reply:
+        "Posible coincidencia con un técnico legacy. Escalando a RRHH para verificar.",
+    });
+  }
+  return ok({
+    matches,
+    next_action: "proceed_with_screening",
+    suggested_reply:
+      "No hay técnicos legacy que se parezcan claramente. Sigamos con la calificación normal.",
+  });
 }
