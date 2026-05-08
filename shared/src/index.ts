@@ -1,4 +1,5 @@
 export * from "./db-types";
+export * from "./dossier-types";
 export * from "./env";
 export * from "./logger";
 export * from "./supabase";

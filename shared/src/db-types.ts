@@ -1,6 +1,19 @@
 // Redin Marketplace v1 — Supabase DB types
-// Hand-authored to match /marketplace/migrations/001_init.sql exactly.
-// Regenerate via `npm run gen:types` once SUPABASE_ACCESS_TOKEN is valid.
+// Hand-authored to match migrations 001–009 exactly. Regenerate via
+// `npm run gen:types` once SUPABASE_ACCESS_TOKEN is valid.
+
+import type {
+  CandidateState,
+  WithdrawalReason,
+  TonoRecommendation,
+  CandidateDossier,
+  HrAction,
+  KillSwitchState,
+  DailyLlmCostRow,
+  CostKillSwitchOverride,
+  TurnRow,
+  TonoAgreementMetricRow,
+} from "./dossier-types";
 
 export type Json =
   | string
@@ -10,15 +23,24 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[];
 
+// Re-export shared dossier vocabulary so consumers can import from one place.
+export type {
+  CandidateState,
+  WithdrawalReason,
+  TonoRecommendation,
+  CandidateDossier,
+  HrAction,
+  KillSwitchState,
+  DailyLlmCostRow,
+  CostKillSwitchOverride,
+  TurnRow,
+  TonoAgreementMetricRow,
+};
+
 // ---------- Enums / literal unions ----------
 
 export type TecnicoEstado = "activo" | "pausado" | "baneado";
-export type QualificationState =
-  | "pending"
-  | "needs_review"
-  | "needs_call"
-  | "qualified"
-  | "rejected";
+
 export type QualificationCallOutcome =
   | "approved"
   | "rejected"
@@ -59,6 +81,19 @@ export type EventoType =
   | "agent_tool_call"
   | "message_received"
   | "message_sent"
+  | "tecnico_re_registered"
+  | "tecnico_legacy_bootstrap"
+  | "qualification_review_requested"
+  | "deprecated_tool_called"
+  | "candidate_dossier_submitted"
+  | "candidate_withdrawn"
+  | "cedula_merged"
+  | "cost_kill_switch_triggered"
+  | "appsheet_schema_drift"
+  | "refused"
+  | "llm_call"
+  | "llm_error"
+  | "llm_retry"
   | string; // open-ended
 
 // ---------- Table row types ----------
@@ -76,8 +111,76 @@ export type TecnicoExtendedRow = {
   onboarded_at: string;
   source: string | null;
   appsheet_synced_at: string | null;
-  qualification_state: QualificationState;
+  // Migration 007: 7-state machine; replaces the old qualification_state column.
+  candidate_state: CandidateState;
+  // Migration 007: cross-system identity. Unique-but-nullable (partial index
+  // WHERE cedula IS NOT NULL — multiple NULLs allowed).
+  cedula: string | null;
+  // Migration 007: filled when state flips to 'withdrawn'.
+  withdrawal_reason: string | null;
+  // Migration 007: AppSheet projection state (outbox pattern).
+  appsheet_row_id: string | null;
+  appsheet_sync_pending: boolean;
+  appsheet_delete_pending: boolean;
+  appsheet_sync_attempts: number;
+  appsheet_sync_last_error: string | null;
+  // Migration 009: legacy bootstrap + progressive enrichment.
+  imported_at: string | null;
+  import_source: string | null;
+  profile_complete: boolean;
+  legacy_popularidad: number | null;
+  legacy_activity_count: number | null;
+  enrichment_data: Json | null;
+  // Migration 004
   last_jid: string | null;
+};
+
+export type CandidateDossierRow = {
+  id: string;
+  tecnico_id: string;
+  session_id: string | null;
+  submitted_by: string;
+  payload: Json;
+  cedula: string;
+  tono_recommendation: TonoRecommendation;
+  tono_confidence: number;
+  tono_reasoning: string;
+  prompt_sha: string | null;
+  schema_version: number;
+  created_at: string;
+};
+
+export type CandidateDecisionRow = {
+  id: string;
+  tecnico_id: string;
+  dossier_id: string | null;
+  decision: HrAction;
+  resulting_state: CandidateState;
+  prior_state: CandidateState;
+  tono_recommendation_at_decision_time: TonoRecommendation | null;
+  agreed_with_tono: boolean | null;
+  hr_reasoning: string | null;
+  decided_by: string;
+  decided_at: string;
+};
+
+export type HrNoteRow = {
+  id: string;
+  tecnico_id: string;
+  dossier_id: string | null;
+  body: string;
+  hr_user: string;
+  created_at: string;
+};
+
+export type TurnsRow = TurnRow;
+
+export type CostKillSwitchOverrideRow = {
+  id: string;
+  override_date: string;
+  reset_by: string;
+  reset_at: string;
+  reason: string | null;
 };
 
 export type QualificationCallRow = {
@@ -105,7 +208,6 @@ export type TecnicoEvaluationRow = {
   created_at: string;
 };
 
-// Aggregated view from migrations/003_qualification.sql.
 export type TecnicoPerformanceRow = {
   tecnico_id: string;
   eval_count: number;
@@ -214,8 +316,6 @@ export type OutboundMessageRow = {
   attachment_bucket: string | null;
 };
 
-// Mirrors store the AppSheet row as jsonb `data`; we extract a few columns
-// we query by (`ciudad`, `especialidad`, `estado` on ots_mirror).
 export type MirrorRowBase = {
   row_id: string;
   data: Json;
@@ -239,23 +339,14 @@ export type ContactoMirrorRow = MirrorRowBase & {
 };
 
 // ---------- Supabase Database schema handle ----------
-// Shape compatible with @supabase/postgrest-js GenericSchema:
-//   Tables: Record<string, { Row, Insert, Update, Relationships: GenericRelationship[] }>
-//   Views:     Record<string, GenericView>
-//   Functions: Record<string, GenericFunction>
-// We don't use Views/Functions/Relationships in v1 — empty shapes satisfy the constraint.
 
-// Empty relationships tuple common to every table (no FK typings in v1).
 type NoRelationships = [];
 
-// Make every nullable column optional in Insert (matches Postgres semantics:
-// missing column → NULL). Keeps non-nullable columns required.
 type NullableKeys<T> = {
   [K in keyof T]: null extends T[K] ? K : never;
 }[keyof T];
 type OptionalNulls<T> = Omit<T, NullableKeys<T>> & Partial<Pick<T, NullableKeys<T>>>;
 
-// Helper to attach the Relationships constraint without repeating.
 type Table<Row, Insert, Update> = {
   Row: Row;
   Insert: Insert;
@@ -271,14 +362,85 @@ export interface Database {
         OptionalNulls<
           Omit<
             TecnicoExtendedRow,
-            "onboarded_at" | "estado" | "qualification_state"
+            | "onboarded_at"
+            | "estado"
+            | "candidate_state"
+            | "appsheet_sync_pending"
+            | "appsheet_delete_pending"
+            | "appsheet_sync_attempts"
+            | "profile_complete"
           > & {
             onboarded_at?: string;
             estado?: TecnicoEstado;
-            qualification_state?: QualificationState;
+            candidate_state?: CandidateState;
+            appsheet_sync_pending?: boolean;
+            appsheet_delete_pending?: boolean;
+            appsheet_sync_attempts?: number;
+            profile_complete?: boolean;
           }
         >,
         Partial<TecnicoExtendedRow>
+      >;
+      candidate_dossiers: Table<
+        CandidateDossierRow,
+        OptionalNulls<
+          Omit<
+            CandidateDossierRow,
+            "id" | "submitted_by" | "schema_version" | "created_at"
+          > & {
+            id?: string;
+            submitted_by?: string;
+            schema_version?: number;
+            created_at?: string;
+          }
+        >,
+        Partial<CandidateDossierRow>
+      >;
+      candidate_decisions: Table<
+        CandidateDecisionRow,
+        OptionalNulls<
+          Omit<CandidateDecisionRow, "id" | "decided_at"> & {
+            id?: string;
+            decided_at?: string;
+          }
+        >,
+        Partial<CandidateDecisionRow>
+      >;
+      hr_notes: Table<
+        HrNoteRow,
+        OptionalNulls<
+          Omit<HrNoteRow, "id" | "created_at"> & {
+            id?: string;
+            created_at?: string;
+          }
+        >,
+        Partial<HrNoteRow>
+      >;
+      turns: Table<
+        TurnsRow,
+        OptionalNulls<
+          Omit<
+            TurnsRow,
+            "id" | "started_at" | "escalated" | "refused" | "cost_killed"
+          > & {
+            id?: string;
+            started_at?: string;
+            escalated?: boolean;
+            refused?: boolean;
+            cost_killed?: boolean;
+          }
+        >,
+        Partial<TurnsRow>
+      >;
+      cost_kill_switch_overrides: Table<
+        CostKillSwitchOverrideRow,
+        OptionalNulls<
+          Omit<CostKillSwitchOverrideRow, "id" | "reset_at"> & {
+            id?: string;
+            reset_at?: string;
+          }
+        >,
+        Partial<CostKillSwitchOverrideRow>
       >;
       qualification_calls: Table<
         QualificationCallRow,
@@ -434,6 +596,29 @@ export interface Database {
     Views: {
       tecnico_performance: {
         Row: TecnicoPerformanceRow;
+        Relationships: NoRelationships;
+      };
+      daily_llm_cost: {
+        Row: DailyLlmCostRow;
+        Relationships: NoRelationships;
+      };
+      turn_costs: {
+        Row: {
+          id: string;
+          session_id: string;
+          turn_number: number;
+          phone: string;
+          model: string | null;
+          prompt_tokens: number | null;
+          completion_tokens: number | null;
+          cost_usd: number;
+          latency_ms: number | null;
+          started_at: string;
+        };
+        Relationships: NoRelationships;
+      };
+      tono_agreement_metrics: {
+        Row: TonoAgreementMetricRow;
         Relationships: NoRelationships;
       };
     };

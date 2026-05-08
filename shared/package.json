@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./supabase": "./src/supabase.ts",
     "./db-types": "./src/db-types.ts",
+    "./dossier-types": "./src/dossier-types.ts",
     "./env": "./src/env.ts",
     "./logger": "./src/logger.ts"
   },
