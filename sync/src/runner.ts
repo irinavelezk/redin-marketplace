@@ -1,10 +1,19 @@
-// Long-running sync service: runs refreshAll() every 15 minutes + exposes a simple
-// signal handler so you can trigger on-demand refresh via SIGUSR1 (useful for dev).
+// Long-running sync service:
+//   - Mirror refresh every 15 minutes (node-cron) — pulls AppSheet → Supabase.
+//   - Projector tick every 60 seconds (setInterval) — pushes Supabase →
+//     AppSheet for approved/revoked candidates.
+// SIGUSR1 triggers an on-demand mirror refresh (dev convenience).
+//
+// node-cron 6-field syntax was considered for the projector cron but the
+// installed version's behavior with seconds is inconsistent across docs.
+// setInterval(60_000) is the unambiguous, verified path; we use it instead.
 
 import cron from "node-cron";
-import { createLogger, requireEnv } from "@redin/shared";
+import { createLogger, createServerClient, requireEnv } from "@redin/shared";
 import { AppSheetReadClient } from "./appsheet";
 import { SyncWorker } from "./mirror";
+import { tickOnce } from "./projector";
+import { TelegramBotSink } from "./telegram";
 
 const log = createLogger("sync:runner");
 
@@ -14,14 +23,19 @@ async function main() {
     accessKey: requireEnv("APPSHEET_ACCESS_KEY"),
   });
   const worker = new SyncWorker({ appsheet });
+  const supa = createServerClient();
+  const telegram = TelegramBotSink.fromEnv();
 
   log.info("starting sync runner", {
-    cron: "*/15 * * * *",
+    mirror_cron: "*/15 * * * *",
+    projector_interval_ms: 60_000,
     timezone: "America/Bogota",
   });
 
-  // Initial refresh so the system doesn't wait 15 min on cold boot.
-  worker.refreshAll().catch((e) => log.error("initial refresh failed", { error: String(e) }));
+  // Initial mirror refresh so the system doesn't wait 15 min on cold boot.
+  worker.refreshAll().catch((e) =>
+    log.error("initial refresh failed", { error: String(e) })
+  );
 
   cron.schedule(
     "*/15 * * * *",
@@ -30,11 +44,41 @@ async function main() {
         const r = await worker.refreshAll();
         log.info("cron refresh ok", { ok: r.ok, total_ms: r.total_ms });
       } catch (e) {
-        log.error("cron refresh failed", { error: e instanceof Error ? e.message : String(e) });
+        log.error("cron refresh failed", {
+          error: e instanceof Error ? e.message : String(e),
+        });
       }
     },
     { timezone: "America/Bogota" }
   );
+
+  // Initial projector tick on cold boot. If approve happened during downtime,
+  // don't wait 60s.
+  void tickOnce({ supa, appsheet, telegram }).catch((e) =>
+    log.error("initial projector tick failed", { error: String(e) })
+  );
+
+  // Re-entrancy guard so a slow tick doesn't queue up an overlap.
+  let projectorRunning = false;
+  setInterval(async () => {
+    if (projectorRunning) {
+      log.warn("projector tick still running; skipping interval");
+      return;
+    }
+    projectorRunning = true;
+    try {
+      const results = await tickOnce({ supa, appsheet, telegram });
+      if (results.length > 0) {
+        log.info("projector tick", { count: results.length, results });
+      }
+    } catch (e) {
+      log.error("projector tick failed", {
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      projectorRunning = false;
+    }
+  }, 60_000);
 
   process.on("SIGUSR1", () => {
     log.info("on-demand refresh signaled");
@@ -42,11 +86,6 @@ async function main() {
       log.error("on-demand refresh failed", { error: String(e) })
     );
   });
-
-  // Keep the process alive (node-cron holds an interval; we also add an idle keep-alive).
-  setInterval(() => {
-    /* heartbeat */
-  }, 60_000);
 }
 
 main().catch((e) => {

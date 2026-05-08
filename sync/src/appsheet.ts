@@ -1,6 +1,8 @@
-// Read-only AppSheet client for the marketplace.
-// Pattern mirrors /Users/irina/AI-driven-OS/autonomous/redin/agent/src/clients/appsheet.ts
-// but we never call Edit/Add — enforce it at the type level.
+// AppSheet client for the marketplace.
+// Read methods: find / findWithSchemaCheck (Stream A).
+// Write methods: addTecnico / deleteTecnico / findTecnicoByName (Stream B —
+//   ONLY for the TECNICOS reverse-projection per onboarding contracts §8.
+//   AppSheet schema for OTs/Customers/Architects/Activities stays read-only).
 
 export interface AppSheetConfig {
   appId: string;
@@ -113,7 +115,157 @@ export class AppSheetReadClient {
 
     return { rows, unknown_columns: unknown };
   }
+
+  // ===========================================================================
+  // Write methods — TECNICOS reverse-projection only.
+  // ===========================================================================
+
+  /**
+   * Find AppSheet TECNICOS rows by exact-match Selector on Nombre de Tecnico.
+   * Backbone of find-then-Add idempotency (§8.4): the projector calls this
+   * before issuing Add to absorb any manual AppSheet adds and prevent
+   * duplicate rows.
+   *
+   * Returns:
+   *   - 0 rows: name not found; projector proceeds to Add.
+   *   - 1 row:  name found; projector captures Row ID without Add.
+   *   - >1 rows: ambiguous; projector escalates to Telegram + leaves
+   *     appsheet_sync_pending=true. HR resolves manually.
+   *
+   * Reuses findWithSchemaCheck so a silent AppSheet schema change throws
+   * before partial writes can land.
+   */
+  async findTecnicoByName(
+    name: string
+  ): Promise<AppSheetTecnicoRow[]> {
+    if (!name || !name.trim()) return [];
+    // AppSheet selector syntax: Filter(<Table>, [Col] = "<value>"). Escape
+    // double quotes in the name so an apostrophe-laden name doesn't break parsing.
+    const escaped = name.replace(/"/g, '""');
+    const selector = `Filter(Tecnicos, [Nombre de Tecnico] = "${escaped}")`;
+    const { rows } = await this.findWithSchemaCheck<AppSheetTecnicoRow>(
+      "Tecnicos",
+      {
+        requiredWriteColumns: ["Nombre de Tecnico"],
+        knownColumns: APPSHEET_TECNICOS_KNOWN_COLUMNS,
+        selector,
+      }
+    );
+    return rows;
+  }
+
+  /**
+   * Add a new TECNICOS row. Returns the response row including the
+   * server-assigned Row ID. Throws on non-2xx or missing Row ID.
+   *
+   * AppSheet's response shape varies — sometimes a top-level array, sometimes
+   * `{Rows: [...]}`. We probe both and fail loud if neither yields a Row ID.
+   */
+  async addTecnico(row: {
+    "Nombre de Tecnico": string;
+    Telefono?: string;
+    EMAIL?: string;
+  }): Promise<AppSheetTecnicoRow> {
+    const res = await fetch(this.url("Tecnicos"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ApplicationAccessKey: this.accessKey,
+      },
+      body: JSON.stringify({
+        Action: "Add",
+        Properties: { Locale: "en-US" },
+        Rows: [row],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `AppSheet Tecnicos Add failed: ${res.status} ${body.substring(0, 200)}`
+      );
+    }
+    const text = await res.text();
+    if (!text) throw new Error("AppSheet Tecnicos Add returned empty body");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error(
+        `AppSheet Tecnicos Add returned non-JSON: ${text.substring(0, 200)}`
+      );
+    }
+    const candidates: AppSheetTecnicoRow[] = Array.isArray(parsed)
+      ? (parsed as AppSheetTecnicoRow[])
+      : Array.isArray((parsed as { Rows?: unknown }).Rows)
+        ? ((parsed as { Rows: AppSheetTecnicoRow[] }).Rows)
+        : [];
+    const first = candidates[0];
+    if (!first || !first["Row ID"]) {
+      throw new Error(
+        `AppSheet Tecnicos Add response missing Row ID: ${text.substring(0, 200)}`
+      );
+    }
+    return first;
+  }
+
+  /**
+   * Delete a TECNICOS row by Row ID. Per §8.3, re-deleting a now-gone row is
+   * a no-op success.
+   *
+   * Empirical AppSheet Delete behavior on a non-existent Row ID is
+   * UNVERIFIED in this org's codebase. The contract claims 404 = success;
+   * if AppSheet returns 200 with empty body in both cases, the success path
+   * covers it without the 404 branch firing. Verify against a throwaway test
+   * row before promoting to prod.
+   */
+  async deleteTecnico(
+    rowId: string
+  ): Promise<{ deleted: true; alreadyGone: boolean }> {
+    const res = await fetch(this.url("Tecnicos"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ApplicationAccessKey: this.accessKey,
+      },
+      body: JSON.stringify({
+        Action: "Delete",
+        Properties: { Locale: "en-US" },
+        Rows: [{ "Row ID": rowId }],
+      }),
+    });
+    if (res.status === 404) return { deleted: true, alreadyGone: true };
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `AppSheet Tecnicos Delete failed: ${res.status} ${body.substring(0, 200)}`
+      );
+    }
+    return { deleted: true, alreadyGone: false };
+  }
 }
+
+// AppSheet TECNICOS row shape — the verified column schema (live API
+// 2026-05-07). Loose typing because AppSheet may add columns silently;
+// findWithSchemaCheck flags drift via unknown_columns.
+export interface AppSheetTecnicoRow extends Record<string, string | undefined> {
+  _RowNumber?: string;
+  "Row ID"?: string;
+  "Nombre de Tecnico"?: string;
+  Telefono?: string;
+  EMAIL?: string;
+  Popularidad_Tecnico?: string;
+  "Related DETALLE DE ACTIVIDADESs"?: string;
+}
+
+const APPSHEET_TECNICOS_KNOWN_COLUMNS = [
+  "_RowNumber",
+  "Row ID",
+  "Nombre de Tecnico",
+  "Telefono",
+  "EMAIL",
+  "Popularidad_Tecnico",
+  "Related DETALLE DE ACTIVIDADESs",
+] as const;
 
 export const MIRROR_TABLES = {
   TECNICOS: "Tecnicos",
