@@ -245,12 +245,15 @@ export default async function HrShortlistPage({ params }: Props) {
           <li key={r.postulacion.id} className="card p-4">
             <div className="flex items-center justify-between gap-2">
               <div>
-                <div className="font-medium text-slate-900">
+                <Link
+                  href={`/hr/tecnicos/${encodeURIComponent(r.postulacion.tecnico_id)}`}
+                  className="font-medium text-slate-900 hover:text-amber-700"
+                >
                   {tecnicoLabel({
                     nombre: nombreByTec.get(r.postulacion.tecnico_id) ?? null,
                     ciudad: ciudadByTec.get(r.postulacion.tecnico_id) ?? null,
                   })}
-                </div>
+                </Link>
                 <div className="text-xs text-slate-500">
                   Estado: {r.postulacion.state} · Aplicó{" "}
                   {new Date(r.postulacion.applied_at).toLocaleString("es-CO")}
