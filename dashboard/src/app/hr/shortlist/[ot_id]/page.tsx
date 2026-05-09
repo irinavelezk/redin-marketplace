@@ -183,6 +183,39 @@ export default async function HrShortlistPage({ params }: Props) {
     openPosByTec.set(r.tecnico_id, (openPosByTec.get(r.tecnico_id) ?? 0) + 1);
   }
 
+  // Migration 010: bulk-load nombre per applicant so the shortlist shows real
+  // names instead of `tecnico_id.slice(0, 8)`. Falls back to the prefix when
+  // the column is null on legacy rows.
+  const { data: tecRows } = tecnicoIds.length
+    ? await supa
+        .from("tecnicos_extended")
+        .select("tecnico_id, nombre")
+        .in("tecnico_id", tecnicoIds)
+    : { data: [] };
+  const nombreByTec = new Map<string, string | null>();
+  for (const r of tecRows ?? []) {
+    nombreByTec.set(r.tecnico_id, r.nombre ?? null);
+  }
+
+  // Worker ciudad lives in eventos.meta.ciudad (tecnico_registered) — not on
+  // tecnicos_extended. Bulk-load so HR can spot worker-vs-OT city mismatches
+  // (the OT's ciudad is in the page header above each card).
+  const { data: ciudadEvents } = tecnicoIds.length
+    ? await supa
+        .from("eventos")
+        .select("entity_id, meta, created_at")
+        .eq("type", "tecnico_registered")
+        .in("entity_id", tecnicoIds)
+        .order("created_at", { ascending: false })
+    : { data: [] };
+  const ciudadByTec = new Map<string, string | null>();
+  for (const e of ciudadEvents ?? []) {
+    if (!e.entity_id || ciudadByTec.has(e.entity_id)) continue;
+    const meta = e.meta as Record<string, unknown> | null;
+    const c = meta && typeof meta.ciudad === "string" ? meta.ciudad : null;
+    ciudadByTec.set(e.entity_id, c);
+  }
+
   const ranked = rankPostulaciones({
     postulaciones: posts ?? [],
     openPosByTecnico: openPosByTec,
@@ -208,7 +241,14 @@ export default async function HrShortlistPage({ params }: Props) {
             <div className="flex items-center justify-between gap-2">
               <div>
                 <div className="font-medium text-slate-900">
-                  Técnico {r.postulacion.tecnico_id.slice(0, 8)}
+                  {nombreByTec.get(r.postulacion.tecnico_id) ??
+                    `Técnico ${r.postulacion.tecnico_id.slice(0, 8)}`}
+                  {ciudadByTec.get(r.postulacion.tecnico_id) && (
+                    <span className="text-slate-500 font-normal">
+                      {" · "}
+                      {ciudadByTec.get(r.postulacion.tecnico_id)}
+                    </span>
+                  )}
                 </div>
                 <div className="text-xs text-slate-500">
                   Estado: {r.postulacion.state} · Aplicó{" "}
