@@ -7,6 +7,7 @@ import {
   enqueueWhatsAppDocument,
   tecnicoNotificationContext,
 } from "@/lib/notify";
+import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import Link from "next/link";
@@ -157,6 +158,44 @@ export default async function ContractPage({ params, searchParams }: Props) {
     .maybeSingle();
   if (!contract) return <div className="card p-4">Contrato no encontrado.</div>;
 
+  // Pull human labels so the page never leads with a UUID. Worker nombre
+  // comes from tecnicos_extended (post migration 010); ciudad from the
+  // tecnico_registered event meta (same source identify_user uses); OT
+  // title from ots_mirror.data via otTitle().
+  const [tecRes, ciudadEventRes, otRes] = await Promise.all([
+    supa
+      .from("tecnicos_extended")
+      .select("nombre")
+      .eq("tecnico_id", contract.tecnico_id)
+      .maybeSingle(),
+    supa
+      .from("eventos")
+      .select("meta")
+      .eq("type", "tecnico_registered")
+      .eq("entity_id", contract.tecnico_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    contract.ot_id
+      ? supa
+          .from("ots_mirror")
+          .select("ciudad, data")
+          .eq("row_id", contract.ot_id)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
+  ]);
+  const tecnicoNombre = tecRes.data?.nombre ?? null;
+  const ciudadMeta = ciudadEventRes.data?.meta;
+  const tecnicoCiudad =
+    ciudadMeta && typeof ciudadMeta === "object" && !Array.isArray(ciudadMeta)
+      ? (ciudadMeta as Record<string, unknown>).ciudad
+      : null;
+  const tecLabel = tecnicoLabel({
+    nombre: tecnicoNombre,
+    ciudad: typeof tecnicoCiudad === "string" ? tecnicoCiudad : null,
+  });
+  const otHeadline = otTitle(otRes.data);
+
   const noPdfYet = !contract.pdf_storage_path;
   const showNoPdfError = searchParams?.error === "no_pdf";
 
@@ -166,12 +205,24 @@ export default async function ContractPage({ params, searchParams }: Props) {
         ← pipeline
       </Link>
       <div className="card p-4">
-        <h1 className="font-semibold text-slate-900">Contrato {contract.id.slice(0, 8)}</h1>
-        <div className="text-sm text-slate-600 mt-1">
-          Técnico: {contract.tecnico_id} · OT: {contract.ot_id ?? "—"}
+        <div className="text-xs text-slate-500 uppercase tracking-wide">
+          Contrato
         </div>
-        <div className="text-sm text-slate-600">
+        <h1 className="font-semibold text-slate-900 mt-0.5">
+          <Link
+            href={`/hr/tecnicos/${encodeURIComponent(contract.tecnico_id)}`}
+            className="hover:text-amber-700"
+          >
+            {tecLabel}
+          </Link>
+        </h1>
+        <div className="text-sm text-slate-700 mt-1">{otHeadline}</div>
+        <div className="text-sm text-slate-600 mt-1">
           Estado: <strong>{contract.status}</strong>
+        </div>
+        <div className="text-[11px] text-slate-400 font-mono mt-1">
+          {contract.id.slice(0, 8)}
+          {contract.ot_id && <> · OT {contract.ot_id.slice(0, 8)}</>}
         </div>
         {showNoPdfError && (
           <div className="mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">

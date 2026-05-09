@@ -3,6 +3,7 @@
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
+import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import type { PostulacionRow } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -39,7 +40,6 @@ export default async function HrPipelinePage() {
     .select("row_id, ciudad, especialidad, estado, data, synced_at")
     .order("synced_at", { ascending: false })
     .limit(30);
-
   const seen = new Set<string>();
   const ots: NonNullable<typeof otsRecent> = [];
   for (const o of otsWithPosts ?? []) {
@@ -177,16 +177,21 @@ export default async function HrPipelinePage() {
           });
           return (
             <li key={ot.row_id} className="card p-4">
-              <div className="flex items-start justify-between">
-                <div>
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
                   <div className="text-sm text-slate-500">
                     {ot.ciudad ?? "—"} · {ot.especialidad ?? "—"} · {ot.estado ?? "—"}
                   </div>
-                  <div className="font-medium text-slate-900">{ot.row_id}</div>
+                  <div className="font-medium text-slate-900 truncate">
+                    {otTitle(ot)}
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                    {ot.row_id.slice(0, 8)}
+                  </div>
                 </div>
                 <Link
                   href={`/hr/shortlist/${encodeURIComponent(ot.row_id)}`}
-                  className="text-sm text-amber-600 hover:text-amber-700 font-medium"
+                  className="text-sm text-amber-600 hover:text-amber-700 font-medium shrink-0"
                 >
                   Shortlist →
                 </Link>
@@ -203,14 +208,10 @@ export default async function HrPipelinePage() {
                       className="flex items-center justify-between border-t border-slate-100 pt-1"
                     >
                       <span className="text-slate-700">
-                        {nombreByTec.get(r.postulacion.tecnico_id) ??
-                          `Técnico ${r.postulacion.tecnico_id.slice(0, 8)}`}
-                        {ciudadByTec.get(r.postulacion.tecnico_id) && (
-                          <span className="text-slate-500">
-                            {" · "}
-                            {ciudadByTec.get(r.postulacion.tecnico_id)}
-                          </span>
-                        )}
+                        {tecnicoLabel({
+                          nombre: nombreByTec.get(r.postulacion.tecnico_id) ?? null,
+                          ciudad: ciudadByTec.get(r.postulacion.tecnico_id) ?? null,
+                        })}
                         {" · "}
                         <span className="text-slate-500">{r.postulacion.state}</span>
                       </span>

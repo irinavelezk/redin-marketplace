@@ -4,6 +4,7 @@
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
 import { enqueueWhatsApp, tecnicoNotificationContext } from "@/lib/notify";
+import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import type { PostulacionState } from "@redin/shared";
@@ -149,6 +150,7 @@ export default async function HrShortlistPage({ params }: Props) {
     .select("row_id, ciudad, especialidad, estado, data")
     .eq("row_id", otId)
     .maybeSingle();
+  const otHeadline = otTitle(ot);
   const { data: posts } = await supa
     .from("postulaciones")
     .select("*")
@@ -232,8 +234,11 @@ export default async function HrShortlistPage({ params }: Props) {
         <div className="text-sm text-slate-500">
           {ot?.ciudad ?? "—"} · {ot?.especialidad ?? "—"}
         </div>
-        <div className="font-semibold text-slate-900 mt-0.5">OT {otId}</div>
+        <div className="font-semibold text-slate-900 mt-0.5">{otHeadline}</div>
         <div className="text-sm text-slate-700 mt-1">{ot?.estado ?? "—"}</div>
+        <div className="text-[11px] text-slate-400 font-mono mt-1">
+          {otId.slice(0, 8)}
+        </div>
       </div>
       <ul className="space-y-2">
         {ranked.map((r) => (
@@ -241,14 +246,10 @@ export default async function HrShortlistPage({ params }: Props) {
             <div className="flex items-center justify-between gap-2">
               <div>
                 <div className="font-medium text-slate-900">
-                  {nombreByTec.get(r.postulacion.tecnico_id) ??
-                    `Técnico ${r.postulacion.tecnico_id.slice(0, 8)}`}
-                  {ciudadByTec.get(r.postulacion.tecnico_id) && (
-                    <span className="text-slate-500 font-normal">
-                      {" · "}
-                      {ciudadByTec.get(r.postulacion.tecnico_id)}
-                    </span>
-                  )}
+                  {tecnicoLabel({
+                    nombre: nombreByTec.get(r.postulacion.tecnico_id) ?? null,
+                    ciudad: ciudadByTec.get(r.postulacion.tecnico_id) ?? null,
+                  })}
                 </div>
                 <div className="text-xs text-slate-500">
                   Estado: {r.postulacion.state} · Aplicó{" "}

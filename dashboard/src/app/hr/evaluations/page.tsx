@@ -231,12 +231,14 @@ export default async function HrEvaluationsPage() {
               <li key={p.id} className="card p-4">
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="font-medium text-slate-900">
-                      {nombre ?? `Técnico ${p.tecnico_id.slice(0, 8)}`}
-                    </div>
+                    <Link
+                      href={`/hr/tecnicos/${encodeURIComponent(p.tecnico_id)}`}
+                      className="font-medium text-slate-900 hover:text-amber-700"
+                    >
+                      {nombre ?? "(sin nombre)"}
+                    </Link>
                     <div className="text-xs text-slate-500 mt-0.5">
-                      OT {p.ot_id.slice(0, 12)} · {ot?.ciudad ?? "—"} ·{" "}
-                      {ot?.especialidad ?? "—"} · {p.state}
+                      {ot?.ciudad ?? "—"} · {ot?.especialidad ?? "—"} · {p.state}
                     </div>
                     {ot?.descripcion && (
                       <div className="text-sm text-slate-700 mt-1 line-clamp-2">

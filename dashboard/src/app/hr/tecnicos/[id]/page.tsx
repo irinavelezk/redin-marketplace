@@ -7,6 +7,7 @@
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { submitDecision, appendHrNote } from "@/lib/decisions";
+import { otTitle } from "@/lib/ot-display";
 import type { CandidateState, TonoRecommendation, HrAction } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -186,20 +187,36 @@ export default async function TecnicoDetailPage({
   const evaluations = evaluationsRes.data ?? [];
   const events = eventsRes.data ?? [];
 
-  // OT lookup for postulaciones
-  const otIds = [...new Set(postulaciones.map((p) => p.ot_id))];
+  // OT lookup for postulaciones, contratos, and evaluaciones — every list
+  // below renders the OT human title (descripcion fallback ciudad) as primary.
+  const otIds = [
+    ...new Set([
+      ...postulaciones.map((p) => p.ot_id),
+      ...contratos.map((c) => c.ot_id).filter((x): x is string => !!x),
+      ...evaluations.map((e) => e.ot_id),
+    ]),
+  ];
   const { data: ots } = otIds.length
     ? await supa
         .from("ots_mirror")
-        .select("row_id, ciudad, especialidad, estado")
+        .select("row_id, ciudad, especialidad, estado, data")
         .in("row_id", otIds)
     : { data: [] };
-  const otByRowId = new Map(
-    (ots ?? []).map((o) => [
-      o.row_id,
-      `${o.ciudad ?? "—"} · ${o.especialidad ?? "—"} · ${o.estado ?? "—"}`,
-    ])
-  );
+  interface OtSummary {
+    titulo: string;
+    ciudad: string | null;
+    especialidad: string | null;
+    estado: string | null;
+  }
+  const otByRowId = new Map<string, OtSummary>();
+  for (const o of ots ?? []) {
+    otByRowId.set(o.row_id, {
+      titulo: otTitle(o),
+      ciudad: o.ciudad,
+      especialidad: o.especialidad,
+      estado: o.estado,
+    });
+  }
 
   // Build merged timeline (reverse chronological).
   const timeline: TimelineEntry[] = [
@@ -412,34 +429,38 @@ export default async function TecnicoDetailPage({
           <div className="card p-3 text-sm text-slate-500">Sin postulaciones aún.</div>
         ) : (
           <ul className="space-y-1">
-            {postulaciones.map((p) => (
-              <li
-                key={p.id}
-                className="card p-3 text-sm flex items-center justify-between"
-              >
-                <div>
-                  <Link
-                    href={`/hr/shortlist/${encodeURIComponent(p.ot_id)}`}
-                    className="text-slate-900 hover:text-amber-700 font-medium"
-                  >
-                    OT {p.ot_id.slice(0, 12)}
-                  </Link>
-                  <span className="text-slate-500 ml-2">
-                    {otByRowId.get(p.ot_id) ?? "—"}
-                  </span>
-                </div>
-                <div className="text-xs text-slate-500">
-                  <span className="text-slate-700">{p.state}</span> · aplicó{" "}
-                  {fmt(p.applied_at)}
-                  {p.decided_at && (
-                    <>
-                      {" · decisión "}
-                      {fmt(p.decided_at)}
-                    </>
-                  )}
-                </div>
-              </li>
-            ))}
+            {postulaciones.map((p) => {
+              const ot = otByRowId.get(p.ot_id);
+              return (
+                <li
+                  key={p.id}
+                  className="card p-3 text-sm flex items-center justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <Link
+                      href={`/hr/shortlist/${encodeURIComponent(p.ot_id)}`}
+                      className="text-slate-900 hover:text-amber-700 font-medium block truncate"
+                    >
+                      {ot?.titulo ?? "Trabajo sin título"}
+                    </Link>
+                    <div className="text-xs text-slate-500">
+                      {ot?.ciudad ?? "—"} · {ot?.especialidad ?? "—"} ·{" "}
+                      {ot?.estado ?? "—"}
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-500 shrink-0 text-right">
+                    <span className="text-slate-700">{p.state}</span> · aplicó{" "}
+                    {fmt(p.applied_at)}
+                    {p.decided_at && (
+                      <>
+                        {" · decisión "}
+                        {fmt(p.decided_at)}
+                      </>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -451,24 +472,32 @@ export default async function TecnicoDetailPage({
           <div className="card p-3 text-sm text-slate-500">Sin contratos aún.</div>
         ) : (
           <ul className="space-y-1">
-            {contratos.map((c) => (
-              <li
-                key={c.id}
-                className="card p-3 text-sm flex items-center justify-between"
-              >
-                <Link
-                  href={`/hr/contratos/${c.id}`}
-                  className="text-slate-900 hover:text-amber-700 font-medium"
+            {contratos.map((c) => {
+              const ot = c.ot_id ? otByRowId.get(c.ot_id) : null;
+              return (
+                <li
+                  key={c.id}
+                  className="card p-3 text-sm flex items-center justify-between gap-3"
                 >
-                  Contrato {c.id.slice(0, 8)}
-                </Link>
-                <div className="text-xs text-slate-500">
-                  <span className="text-slate-700">{c.status}</span>
-                  {c.sent_at && <> · enviado {fmt(c.sent_at)}</>}
-                  {c.signed_at && <> · firmado {fmt(c.signed_at)}</>}
-                </div>
-              </li>
-            ))}
+                  <div className="min-w-0">
+                    <Link
+                      href={`/hr/contratos/${c.id}`}
+                      className="text-slate-900 hover:text-amber-700 font-medium block truncate"
+                    >
+                      {ot?.titulo ?? "Contrato sin OT"}
+                    </Link>
+                    <div className="text-[11px] text-slate-400 font-mono">
+                      {c.id.slice(0, 8)}
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-500 shrink-0 text-right">
+                    <span className="text-slate-700">{c.status}</span>
+                    {c.sent_at && <> · enviado {fmt(c.sent_at)}</>}
+                    {c.signed_at && <> · firmado {fmt(c.signed_at)}</>}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
@@ -480,26 +509,32 @@ export default async function TecnicoDetailPage({
             Evaluaciones ({evaluations.length})
           </h2>
           <ul className="space-y-1">
-            {evaluations.map((e) => (
-              <li key={e.id} className="card p-3 text-sm">
-                <div className="text-xs text-slate-500">
-                  OT {e.ot_id.slice(0, 12)} · evaluador {e.evaluator} · {fmt(e.created_at)}
-                </div>
-                <div className="text-slate-700 mt-1">
-                  cumplimiento {e.cumplimiento ?? "—"} · calidad {e.calidad ?? "—"} ·{" "}
-                  actitud {e.actitud ?? "—"} · puntualidad {e.puntualidad ?? "—"} ·{" "}
-                  rehire{" "}
-                  {e.recommend_rehire === true
-                    ? "sí"
-                    : e.recommend_rehire === false
-                    ? "no"
-                    : "—"}
-                </div>
-                {e.notes && (
-                  <div className="text-slate-600 mt-1 text-xs">{e.notes}</div>
-                )}
-              </li>
-            ))}
+            {evaluations.map((e) => {
+              const ot = otByRowId.get(e.ot_id);
+              return (
+                <li key={e.id} className="card p-3 text-sm">
+                  <div className="text-slate-900 font-medium">
+                    {ot?.titulo ?? "Trabajo sin título"}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    evaluador {e.evaluator} · {fmt(e.created_at)}
+                  </div>
+                  <div className="text-slate-700 mt-1">
+                    cumplimiento {e.cumplimiento ?? "—"} · calidad {e.calidad ?? "—"} ·{" "}
+                    actitud {e.actitud ?? "—"} · puntualidad {e.puntualidad ?? "—"} ·{" "}
+                    rehire{" "}
+                    {e.recommend_rehire === true
+                      ? "sí"
+                      : e.recommend_rehire === false
+                      ? "no"
+                      : "—"}
+                  </div>
+                  {e.notes && (
+                    <div className="text-slate-600 mt-1 text-xs">{e.notes}</div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
