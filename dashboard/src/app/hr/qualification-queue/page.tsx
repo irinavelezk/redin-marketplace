@@ -401,9 +401,17 @@ export default async function HrQualificationQueuePage() {
                     <input type="hidden" name="tecnico_id" value={tec.tecnico_id} />
                     <input type="hidden" name="prior_state" value={tec.candidate_state} />
                     <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
+                    <label
+                      className="text-[10px] uppercase tracking-wide text-slate-500"
+                      title="Especialmente útil cuando discrepas con la recomendación de Toño."
+                      htmlFor={`hr_reasoning_${tec.tecnico_id}`}
+                    >
+                      Notas de decisión (opcional)
+                    </label>
                     <textarea
+                      id={`hr_reasoning_${tec.tecnico_id}`}
                       name="hr_reasoning"
-                      placeholder="Tu razonamiento (opcional, especialmente si discrepas con Toño)"
+                      placeholder="Especialmente útil cuando discrepas con Toño."
                       className="text-xs border border-slate-200 rounded px-2 py-1 resize-none"
                       rows={2}
                     />
