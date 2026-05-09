@@ -67,35 +67,78 @@ function parseDecisionMeta(meta: unknown): DecisionMeta {
   };
 }
 
+// Chip taxonomy collapses the 7 raw DB states into 3 mental-model buckets
+// HR actually filters on. Granular state stays visible per row in the
+// Estado column (color-coded pill), so nothing is hidden — just unstacked
+// from the top filter bar.
+//
+//   activos    → assignable workers
+//   en_proceso → being onboarded by Toño OR awaiting HR decision
+//   cerrados   → out of the active pool (some reopenable per state machine)
+const BUCKETS: Record<
+  "activos" | "en_proceso" | "cerrados",
+  { label: string; states: CandidateState[] }
+> = {
+  activos: { label: "Activos", states: ["approved"] },
+  en_proceso: {
+    label: "En proceso",
+    states: ["screening", "pending", "needs_call"],
+  },
+  cerrados: {
+    label: "Cerrados",
+    states: ["rejected", "withdrawn", "revoked"],
+  },
+};
+
+type BucketKey = keyof typeof BUCKETS;
+
+function isBucketKey(v: string | undefined): v is BucketKey {
+  return v === "activos" || v === "en_proceso" || v === "cerrados";
+}
+
 export default async function HrTecnicosPage({
   searchParams,
 }: {
-  searchParams?: { state?: string };
+  searchParams?: { bucket?: string };
 }) {
   const auth = serverClientBoundToCookies();
   const { data: userData } = await auth.auth.getUser();
   if (!userData.user) redirect("/login");
 
   const supa = serviceClient();
-  const stateFilter = searchParams?.state;
+  const bucketFilter = isBucketKey(searchParams?.bucket)
+    ? searchParams.bucket
+    : undefined;
 
   let query = supa
     .from("tecnicos_extended")
     .select("*")
     .order("onboarded_at", { ascending: false })
     .limit(200);
-  if (
-    stateFilter === "screening" ||
-    stateFilter === "pending" ||
-    stateFilter === "needs_call" ||
-    stateFilter === "approved" ||
-    stateFilter === "rejected" ||
-    stateFilter === "withdrawn" ||
-    stateFilter === "revoked"
-  ) {
-    query = query.eq("candidate_state", stateFilter);
+  if (bucketFilter) {
+    query = query.in("candidate_state", BUCKETS[bucketFilter].states);
   }
   const { data: tecnicos } = await query;
+
+  // Bucket counts: separate light query so chip badges reflect the totals,
+  // not just the currently-filtered slice. select-only, no row payload.
+  const { data: stateRows } = await supa
+    .from("tecnicos_extended")
+    .select("candidate_state");
+  const totalCount = stateRows?.length ?? 0;
+  const bucketCounts: Record<BucketKey, number> = {
+    activos: 0,
+    en_proceso: 0,
+    cerrados: 0,
+  };
+  for (const r of stateRows ?? []) {
+    for (const key of Object.keys(BUCKETS) as BucketKey[]) {
+      if (BUCKETS[key].states.includes(r.candidate_state)) {
+        bucketCounts[key]++;
+        break;
+      }
+    }
+  }
 
   const ids = (tecnicos ?? []).map((t) => t.tecnico_id);
   const phones = (tecnicos ?? []).map((t) => t.phone);
@@ -170,15 +213,15 @@ export default async function HrTecnicosPage({
 
   void phones; // placeholder for future phone-search filter
 
-  const filterChips: { label: string; value: string | undefined }[] = [
-    { label: "Todos", value: undefined },
-    { label: "En charla", value: "screening" },
-    { label: "Pendientes", value: "pending" },
-    { label: "Llamada pendiente", value: "needs_call" },
-    { label: "Aprobados", value: "approved" },
-    { label: "Rechazados", value: "rejected" },
-    { label: "Retirados", value: "withdrawn" },
-    { label: "Revocados", value: "revoked" },
+  const chips: { label: string; bucket: BucketKey | null; count: number }[] = [
+    { label: "Todos", bucket: null, count: totalCount },
+    { label: BUCKETS.activos.label, bucket: "activos", count: bucketCounts.activos },
+    {
+      label: BUCKETS.en_proceso.label,
+      bucket: "en_proceso",
+      count: bucketCounts.en_proceso,
+    },
+    { label: BUCKETS.cerrados.label, bucket: "cerrados", count: bucketCounts.cerrados },
   ];
 
   return (
@@ -202,9 +245,11 @@ export default async function HrTecnicosPage({
       </div>
 
       <div className="flex flex-wrap gap-2 text-sm">
-        {filterChips.map((c) => {
-          const active = (c.value ?? "") === (stateFilter ?? "");
-          const href = c.value ? `/hr/tecnicos?state=${c.value}` : "/hr/tecnicos";
+        {chips.map((c) => {
+          const active = (c.bucket ?? "") === (bucketFilter ?? "");
+          const href = c.bucket
+            ? `/hr/tecnicos?bucket=${c.bucket}`
+            : "/hr/tecnicos";
           return (
             <Link
               key={c.label}
@@ -215,7 +260,16 @@ export default async function HrTecnicosPage({
                   : "bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-full px-3 py-1"
               }
             >
-              {c.label}
+              {c.label}{" "}
+              <span
+                className={
+                  active
+                    ? "tabular-nums text-slate-300"
+                    : "tabular-nums text-slate-500"
+                }
+              >
+                {c.count}
+              </span>
             </Link>
           );
         })}
