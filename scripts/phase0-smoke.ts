@@ -38,6 +38,11 @@ interface Check {
 const RUN_ID = `smoke-${Date.now()}-${randomUUID().slice(0, 6)}`;
 const PHONE_A = `+5790000${String(Date.now()).slice(-5)}`;
 const PHONE_B = `+5790001${String(Date.now()).slice(-5)}`;
+// Migration 011: contact_phone is required by validateIdentity in
+// register-tecnico. Smoke uses callable-shaped 10-digit numbers (distinct
+// from the WhatsApp identity in PHONE_A/B) so the happy path passes.
+const CONTACT_A = `300${String(Date.now()).slice(-7)}`;
+const CONTACT_B = `301${String(Date.now()).slice(-7)}`;
 const TEST_OT_ID = `${RUN_ID}-ot`;
 
 async function main() {
@@ -86,7 +91,82 @@ async function main() {
       });
     }
 
-    // 2. register_tecnico — new tecnico A
+    // 2a. register_tecnico identity gate — single-token nombre rejected.
+    // Phase 0a: validateIdentity refuses a partial-identity row and tells the
+    // agent what to ask next via next_action / missing / user_message_hint.
+    {
+      const r = await registerTecnico(ctx, {
+        phone: PHONE_A,
+        nombre: "Manuel",
+        ciudad: "Cali",
+        especialidades: ["Eléctrico"],
+        modalidad: "individual",
+        contact_phone: CONTACT_A,
+        source: "smoke",
+      });
+      const ok =
+        !r.ok &&
+        r.error === "INCOMPLETE_IDENTITY" &&
+        r.next_action === "ask_apellidos" &&
+        Array.isArray(r.missing) &&
+        r.missing.includes("apellidos") &&
+        typeof r.user_message_hint === "string" &&
+        r.user_message_hint.length > 0;
+      checks.push({
+        name: "register_tecnico A (single-token nombre rejected)",
+        ok,
+        detail: ok ? undefined : JSON.stringify(r),
+      });
+    }
+
+    // 2b. register_tecnico identity gate — missing contact_phone rejected.
+    {
+      const r = await registerTecnico(ctx, {
+        phone: PHONE_A,
+        nombre: "Manuel Pérez García",
+        ciudad: "Cali",
+        especialidades: ["Eléctrico"],
+        modalidad: "individual",
+        // contact_phone intentionally omitted
+        source: "smoke",
+      });
+      const ok =
+        !r.ok &&
+        r.error === "INCOMPLETE_IDENTITY" &&
+        r.next_action === "ask_contact_phone" &&
+        Array.isArray(r.missing) &&
+        r.missing.includes("contact_phone") &&
+        typeof r.user_message_hint === "string";
+      checks.push({
+        name: "register_tecnico A (missing contact_phone rejected)",
+        ok,
+        detail: ok ? undefined : JSON.stringify(r),
+      });
+    }
+
+    // 2c. register_tecnico identity gate — malformed contact_phone rejected.
+    {
+      const r = await registerTecnico(ctx, {
+        phone: PHONE_A,
+        nombre: "Manuel Pérez García",
+        ciudad: "Cali",
+        especialidades: ["Eléctrico"],
+        modalidad: "individual",
+        contact_phone: "no-es-un-teléfono",
+        source: "smoke",
+      });
+      const ok =
+        !r.ok &&
+        r.error === "INCOMPLETE_IDENTITY" &&
+        r.next_action === "ask_contact_phone";
+      checks.push({
+        name: "register_tecnico A (malformed contact_phone rejected)",
+        ok,
+        detail: ok ? undefined : JSON.stringify(r),
+      });
+    }
+
+    // 2. register_tecnico — new tecnico A (happy path; both fields present)
     let tecnicoIdA = "";
     {
       const r = await registerTecnico(ctx, {
@@ -95,6 +175,7 @@ async function main() {
         ciudad: "Cali",
         especialidades: ["Eléctrico"],
         modalidad: "individual",
+        contact_phone: CONTACT_A,
         source: "smoke",
       });
       const ok = r.ok && r.data.created === true;
@@ -114,6 +195,7 @@ async function main() {
         ciudad: "Cali",
         especialidades: ["Eléctrico"],
         modalidad: "solo", // alias for individual
+        contact_phone: CONTACT_A,
         source: "smoke",
       });
       const ok = r.ok && r.data.created === false && r.data.tecnico_id === tecnicoIdA;
@@ -133,6 +215,7 @@ async function main() {
         ciudad: "Cali",
         especialidades: ["Eléctrico"],
         modalidad: "cuadrilla",
+        contact_phone: CONTACT_B,
         source: "smoke",
       });
       const ok = r.ok && r.data.created === true;

@@ -51,6 +51,12 @@ function check(name: string, ok: boolean, detail?: unknown) {
 const RUN = `nt-${Date.now()}`;
 const phoneA = `+57777${String(Date.now()).slice(-6)}`;
 const phoneB = `+57777${String(Date.now() + 1).slice(-6)}`;
+// Migration 011: contact_phone is required by validateIdentity. Distinct
+// 10-digit numbers per worker so the happy-path registers succeed.
+const contactA = `300${String(Date.now()).slice(-7)}`;
+const contactB = `301${String(Date.now() + 1).slice(-7)}`;
+const contactC = `302${String(Date.now() + 2).slice(-7)}`;
+const contactD = `303${String(Date.now() + 3).slice(-7)}`;
 const cedulaA = String(80000000 + (Date.now() % 10000000));
 const cedulaB = String(80000000 + ((Date.now() + 1) % 10000000));
 
@@ -116,6 +122,7 @@ async function main() {
     ciudad: "Cali",
     especialidades: ["Eléctrico"],
     modalidad: "individual",
+    contact_phone: contactA,
     source: RUN,
   });
   if (!regA.ok) throw new Error(`registerTecnico A failed: ${JSON.stringify(regA)}`);
@@ -155,6 +162,7 @@ async function main() {
     ciudad: "Cali",
     especialidades: ["Eléctrico"],
     modalidad: "individual",
+    contact_phone: contactB,
     source: RUN,
   });
   if (!regB.ok) throw new Error(`registerTecnico B failed`);
@@ -251,10 +259,11 @@ async function main() {
 
   const regC = await registerTecnico(ctx, {
     phone: phoneC,
-    nombre: "Test C",
+    nombre: "Test C García",
     ciudad: "Cali",
     especialidades: ["Eléctrico"],
     modalidad: "individual",
+    contact_phone: contactC,
     source: RUN,
   });
   if (!regC.ok) throw new Error(`registerTecnico C failed`);
@@ -276,10 +285,11 @@ async function main() {
   // Now D registers and submits with cedulaB -> should merge.
   const regD = await registerTecnico(ctx, {
     phone: phoneD,
-    nombre: "Test D",
+    nombre: "Test D García",
     ciudad: "Cali",
     especialidades: ["Eléctrico"],
     modalidad: "individual",
+    contact_phone: contactD,
     source: RUN,
   });
   if (!regD.ok) throw new Error(`registerTecnico D failed`);
