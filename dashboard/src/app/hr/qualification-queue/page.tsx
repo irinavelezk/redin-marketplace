@@ -268,7 +268,7 @@ export default async function HrQualificationQueuePage() {
                         href={`/hr/tecnicos/${encodeURIComponent(tec.tecnico_id)}`}
                         className="font-medium text-slate-900 hover:text-amber-700"
                       >
-                        {reg?.nombre ?? "(sin nombre)"}
+                        {tec.nombre ?? reg?.nombre ?? "(sin nombre)"}
                       </Link>
                       <span className="text-slate-500 font-normal">
                         · {dossier?.ciudad_base ?? reg?.ciudad ?? "—"}
@@ -280,7 +280,17 @@ export default async function HrQualificationQueuePage() {
                       )}
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5">
-                      {tec.phone}
+                      {tec.contact_phone ? (
+                        <a
+                          href={`tel:${tec.contact_phone}`}
+                          className="text-slate-700 font-medium underline-offset-2 hover:underline"
+                        >
+                          📞 {tec.contact_phone}
+                        </a>
+                      ) : (
+                        <span className="text-slate-400">Sin teléfono de contacto</span>
+                      )}
+                      <span className="text-slate-400"> · WA {tec.phone}</span>
                       {dossier && <> · cédula {dossier.cedula}</>} · onboarded{" "}
                       {fmtTime(tec.onboarded_at)}
                     </div>
@@ -393,7 +403,7 @@ export default async function HrQualificationQueuePage() {
                     <input type="hidden" name="dossier_id" value={dossier?.id ?? ""} />
                     <textarea
                       name="hr_reasoning"
-                      placeholder="¿Por qué? (opcional)"
+                      placeholder="Tu razonamiento (opcional, especialmente si discrepas con Toño)"
                       className="text-xs border border-slate-200 rounded px-2 py-1 resize-none"
                       rows={2}
                     />

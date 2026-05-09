@@ -261,9 +261,21 @@ export default async function HrTecnicosPage({
                         href={`/hr/tecnicos/${encodeURIComponent(t.tecnico_id)}`}
                         className="font-medium text-slate-900 hover:text-amber-700"
                       >
-                        {reg?.nombre ?? "—"}
+                        {t.nombre ?? reg?.nombre ?? "—"}
                       </Link>
-                      <div className="text-xs text-slate-500">{t.phone}</div>
+                      <div className="text-xs">
+                        {t.contact_phone ? (
+                          <a
+                            href={`tel:${t.contact_phone}`}
+                            className="text-slate-700 font-medium hover:underline underline-offset-2"
+                          >
+                            📞 {t.contact_phone}
+                          </a>
+                        ) : (
+                          <span className="text-slate-400">Sin teléfono de contacto</span>
+                        )}
+                        <div className="text-slate-400">WA {t.phone}</div>
+                      </div>
                     </td>
                     <td className="px-3 py-2">
                       <div className="text-slate-700">{reg?.ciudad ?? "—"}</div>
