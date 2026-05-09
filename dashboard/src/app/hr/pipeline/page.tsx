@@ -156,6 +156,12 @@ export default async function HrPipelinePage() {
             Técnicos →
           </Link>
           <Link
+            href="/hr/contratos"
+            className="text-sm text-slate-600 hover:text-slate-900"
+          >
+            Contratos →
+          </Link>
+          <Link
             href="/hr/evaluations"
             className="text-sm text-slate-600 hover:text-slate-900"
           >

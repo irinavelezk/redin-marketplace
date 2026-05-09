@@ -117,6 +117,9 @@ export function QueueListClient({ items }: { items: QueueItem[] }): JSX.Element 
           <Link href="/hr/pipeline" className="text-sm text-slate-500 hover:text-slate-700">
             Pipeline →
           </Link>
+          <Link href="/hr/contratos" className="text-sm text-slate-500 hover:text-slate-700">
+            Contratos →
+          </Link>
         </div>
       </div>
       <p className="text-sm text-slate-600 mt-2">
