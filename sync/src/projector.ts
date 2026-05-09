@@ -57,6 +57,7 @@ interface CandidateRow {
   candidate_state: string;
   appsheet_row_id: string | null;
   appsheet_sync_attempts: number;
+  nombre: string | null;
 }
 
 const ATTEMPTS_LIMIT = 3;
@@ -72,7 +73,7 @@ export async function tickOnce(
     deps.supa
       .from("tecnicos_extended")
       .select(
-        "tecnico_id, phone, candidate_state, appsheet_row_id, appsheet_sync_attempts"
+        "tecnico_id, phone, candidate_state, appsheet_row_id, appsheet_sync_attempts, nombre"
       )
       .eq("appsheet_delete_pending", true)
       .lt("appsheet_sync_attempts", ATTEMPTS_LIMIT)
@@ -80,7 +81,7 @@ export async function tickOnce(
     deps.supa
       .from("tecnicos_extended")
       .select(
-        "tecnico_id, phone, candidate_state, appsheet_row_id, appsheet_sync_attempts"
+        "tecnico_id, phone, candidate_state, appsheet_row_id, appsheet_sync_attempts, nombre"
       )
       .eq("appsheet_sync_pending", true)
       .lt("appsheet_sync_attempts", ATTEMPTS_LIMIT)
@@ -151,22 +152,32 @@ export async function tickOnce(
 // Add path
 // ---------------------------------------------------------------------------
 
+// Migration 011: contact_phone intentionally NOT projected to AppSheet.
+// AppSheet's TECNICOS schema only carries `Telefono` (the WA-side identity)
+// per docs/architecture/onboarding-contracts.md §8.1. Supabase remains the
+// source of truth for the callable number; HR reads it from the dashboard,
+// not from Jose's AppSheet.
+
 async function processAdd(
   deps: ProjectorTickDeps,
   row: CandidateRow,
   attempts: number,
   threshold: number
 ): Promise<ProjectorTickResult> {
-  // Resolve nombre from the latest tecnico_registered evento.
-  const { data: regEvent } = await deps.supa
-    .from("eventos")
-    .select("meta")
-    .eq("type", "tecnico_registered")
-    .eq("entity_id", row.tecnico_id)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  const nombre = extractString(regEvent?.meta, "nombre");
+  // Migration 010: prefer the first-class column. Fall back to the latest
+  // tecnico_registered event for legacy rows where the column wasn't backfilled.
+  let nombre: string | null = row.nombre?.trim() || null;
+  if (!nombre) {
+    const { data: regEvent } = await deps.supa
+      .from("eventos")
+      .select("meta")
+      .eq("type", "tecnico_registered")
+      .eq("entity_id", row.tecnico_id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    nombre = extractString(regEvent?.meta, "nombre");
+  }
   if (!nombre) {
     await markFailure(
       deps,

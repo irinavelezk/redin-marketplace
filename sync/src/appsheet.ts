@@ -89,6 +89,14 @@ export class AppSheetReadClient {
       options.selector ? { selector: options.selector } : undefined
     );
 
+    // An empty result is a query miss (filter matched nothing, or table is
+    // empty), not schema drift. The required-columns guardrail is meaningful
+    // only with at least one row to inspect; running it on an empty array
+    // throws unconditionally because rows.some() returns false vacuously.
+    if (rows.length === 0) {
+      return { rows: [], unknown_columns: [] };
+    }
+
     for (const required of options.requiredWriteColumns) {
       const present = rows.some((r) =>
         Object.prototype.hasOwnProperty.call(r, required)
