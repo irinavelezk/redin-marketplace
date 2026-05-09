@@ -4,6 +4,7 @@
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
 import { otTitle, tecnicoLabel } from "@/lib/ot-display";
+import { OFFERABLE_ESTADO } from "@redin/tools/read-pending-ots";
 import type { PostulacionRow } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
@@ -17,55 +18,29 @@ export default async function HrPipelinePage() {
 
   const supa = serviceClient();
 
-  // Two-source pull so OTs with postulaciones can never be hidden by the
-  // recency cutoff. Source A: every OT that has any postulación (so HR sees
-  // actionable items even if the OT was synced days ago). Source B: top 30
-  // most-recently-synced OTs (so HR can also see open work nobody applied to).
-  // Merged + deduped, A first.
-  const { data: allPosts } = await supa
-    .from("postulaciones")
-    .select("*");
-  const otIdsWithPosts = [...new Set((allPosts ?? []).map((p) => p.ot_id))];
-
-  const { data: otsWithPosts } = otIdsWithPosts.length
-    ? await supa
-        .from("ots_mirror")
-        .select("row_id, ciudad, especialidad, estado, data, synced_at")
-        .in("row_id", otIdsWithPosts)
-        .order("synced_at", { ascending: false })
-    : { data: [] };
-
-  const { data: otsRecent } = await supa
+  // Pipeline shows ONLY assignable OTs — state "4. Coordinar – Listo para
+  // ejecutar". Earlier states aren't ready for a worker to take; later
+  // states are already in motion or closed. The literal lives in
+  // @redin/tools/read-pending-ots so this view, the read_pending_ots tool,
+  // and (eventually) the AppSheet sync Selector all reference one source
+  // of truth.
+  const { data: offerableOts } = await supa
     .from("ots_mirror")
     .select("row_id, ciudad, especialidad, estado, data, synced_at")
-    .order("synced_at", { ascending: false })
-    .limit(30);
-  const seen = new Set<string>();
-  const ots: NonNullable<typeof otsRecent> = [];
-  for (const o of otsWithPosts ?? []) {
-    if (!seen.has(o.row_id)) {
-      seen.add(o.row_id);
-      ots.push(o);
-    }
-  }
-  for (const o of otsRecent ?? []) {
-    if (!seen.has(o.row_id)) {
-      seen.add(o.row_id);
-      ots.push(o);
-    }
-  }
+    .eq("estado", OFFERABLE_ESTADO)
+    .order("synced_at", { ascending: false });
+  const pendingOts = offerableOts ?? [];
+  const offerableIds = pendingOts.map((o) => o.row_id);
 
-  const pendingOts = ots.filter(
-    (o) => !o.estado || !["Terminado", "Facturado", "Pagado", "99. Perdida / Cancelada"].includes(o.estado)
-  );
-
-  // allPosts above already covers what we need; the per-OT mapping below
-  // filters to just these pendingOts.
-  const otIds = pendingOts.map((o) => o.row_id);
-  void otIds;
-  const allPostsForPending: PostulacionRow[] = (allPosts ?? []).filter((p) =>
-    seen.has(p.ot_id)
-  );
+  // Postulaciones are pulled scoped to the offerable OTs only, so we don't
+  // ship the whole table over the wire just to filter it client-side.
+  const { data: postsRaw } = offerableIds.length
+    ? await supa
+        .from("postulaciones")
+        .select("*")
+        .in("ot_id", offerableIds)
+    : { data: [] as PostulacionRow[] };
+  const allPostsForPending: PostulacionRow[] = postsRaw ?? [];
 
   // Internal performance (Jose + arquitectos via /hr/evaluations). Replaces
   // the legacy customer-stars ratings — Phase 1 has no direct customer
@@ -170,8 +145,15 @@ export default async function HrPipelinePage() {
         </div>
       </div>
       <p className="text-sm text-slate-600">
-        OTs abiertas con postulaciones. Orden: disponibilidad → calidad → costo.
+        OTs en estado <strong>4. Coordinar – Listo para ejecutar</strong> —
+        las únicas asignables a un técnico. Orden de candidatos por OT:
+        disponibilidad → calidad → costo.
       </p>
+      {pendingOts.length === 0 && (
+        <div className="card p-4 text-sm text-slate-500">
+          No hay OTs listas para asignar en este momento.
+        </div>
+      )}
       <ul className="space-y-4">
         {pendingOts.map((ot) => {
           const posts = postsByOt.get(ot.row_id) ?? [];

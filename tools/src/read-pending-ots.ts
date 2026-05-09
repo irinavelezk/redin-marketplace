@@ -15,7 +15,10 @@ import type {
 } from "./types";
 import { err, ok } from "./types";
 
-const OFFERABLE_ESTADO = "4. Coordinar – Listo para ejecutar";
+// Exported so the dashboard pipeline view (and, eventually, the AppSheet
+// sync Selector) can use the same canonical literal — single source of
+// truth for "the only assignable OT state".
+export const OFFERABLE_ESTADO = "4. Coordinar – Listo para ejecutar";
 
 function descripcionFrom(data: Json): string {
   if (!data || typeof data !== "object" || Array.isArray(data)) return "";
