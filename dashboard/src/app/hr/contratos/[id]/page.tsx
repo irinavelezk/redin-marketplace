@@ -1,151 +1,33 @@
-// HR contract view — generate PDF, mark enviado, upload signed, mark firmado.
-// Server actions + simple signed URL from Supabase Storage.
+// HR contract detail page. Two actions, both in <ContractActions>:
+//   "Generar y enviar"   → generates PDF, uploads, flips to enviado, sends WA
+//   "Subir firmado"      → file picker + signed-URL upload, flips to firmado
+// Old 5-button workflow + paste-storage-path textbox replaced per friction #3.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-import {
-  enqueueWhatsApp,
-  enqueueWhatsAppDocument,
-  tecnicoNotificationContext,
-} from "@/lib/notify";
 import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import { redirect } from "next/navigation";
-import { revalidatePath } from "next/cache";
 import Link from "next/link";
+import { ContractActions } from "./ContractActions";
 
 export const dynamic = "force-dynamic";
 
-async function markSent(formData: FormData) {
-  "use server";
-  const auth = serverClientBoundToCookies();
-  const { data: userData } = await auth.auth.getUser();
-  if (!userData.user) redirect("/login");
-  const hrEmail = userData.user.email ?? userData.user.id;
-
-  const supa = serviceClient();
-  const contractId = formData.get("contract_id");
-  if (typeof contractId !== "string") return;
-
-  // Fetch the contract first so we can decide whether to send the PDF as a
-  // WhatsApp document. If the borrador hasn't been generated yet (HR didn't
-  // click "Descargar borrador"), redirect with an error param so the page
-  // shows a hint instead of silently sending a text-only notification.
-  const { data: contract } = await supa
-    .from("contratos")
-    .select("ot_id, tecnico_id, pdf_storage_path")
-    .eq("id", contractId)
-    .maybeSingle();
-  if (!contract) return;
-  if (!contract.pdf_storage_path) {
-    redirect(`/hr/contratos/${contractId}?error=no_pdf`);
-  }
-
-  const nowIso = new Date().toISOString();
-  await supa
-    .from("contratos")
-    .update({ status: "enviado", sent_at: nowIso })
-    .eq("id", contractId);
-  await supa.from("eventos").insert({
-    type: "contract_sent",
-    entity_id: contractId,
-    actor: `hr:${hrEmail}`,
-    meta: {},
-  });
-
-  if (contract.tecnico_id) {
-    const { phone, descripcion } = await tecnicoNotificationContext(
-      supa,
-      contract.tecnico_id,
-      contract.ot_id
-    );
-    if (phone) {
-      const trabajo = descripcion ?? "el trabajo";
-      await enqueueWhatsAppDocument(supa, {
-        phone,
-        body: `Te llegó el contrato de "${trabajo}". Revísalo y firma cuando puedas — cualquier duda me dices.`,
-        attachment_path: contract.pdf_storage_path,
-        attachment_filename: `contrato-${contractId.slice(0, 8)}.pdf`,
-        attachment_bucket: "contratos",
-        meta: { kind: "contract_sent", contract_id: contractId },
-      });
-    }
-  }
-
-  revalidatePath(`/hr/contratos/${contractId}`);
-}
-
-async function markSigned(formData: FormData) {
-  "use server";
-  const auth = serverClientBoundToCookies();
-  const { data: userData } = await auth.auth.getUser();
-  if (!userData.user) redirect("/login");
-  const hrEmail = userData.user.email ?? userData.user.id;
-
-  const supa = serviceClient();
-  const contractId = formData.get("contract_id");
-  const signedPath = formData.get("signed_path");
-  if (typeof contractId !== "string") return;
-  const nowIso = new Date().toISOString();
-  await supa
-    .from("contratos")
-    .update({
-      status: "firmado",
-      signed_at: nowIso,
-      signed_pdf_storage_path:
-        typeof signedPath === "string" && signedPath.trim() ? signedPath.trim() : null,
-    })
-    .eq("id", contractId);
-
-  const { data: contract } = await supa
-    .from("contratos")
-    .select("ot_id, tecnico_id")
-    .eq("id", contractId)
-    .maybeSingle();
-  await supa.from("eventos").insert({
-    type: "contract_signed",
-    entity_id: contractId,
-    actor: `hr:${hrEmail}`,
-    meta: {
-      ot_id: contract?.ot_id ?? null,
-      tecnico_id: contract?.tecnico_id ?? null,
-    },
-  });
-
-  // Flip the postulación to 'asignado' so the técnico sees it.
-  if (contract?.ot_id && contract?.tecnico_id) {
-    await supa
-      .from("postulaciones")
-      .update({
-        state: "asignado",
-        decided_at: nowIso,
-        decided_by: `hr:${hrEmail}`,
-      })
-      .eq("ot_id", contract.ot_id)
-      .eq("tecnico_id", contract.tecnico_id);
-
-    const { phone, descripcion } = await tecnicoNotificationContext(
-      supa,
-      contract.tecnico_id,
-      contract.ot_id
-    );
-    if (phone) {
-      const trabajo = descripcion ?? "el trabajo";
-      await enqueueWhatsApp(supa, {
-        phone,
-        body: `Listo — quedaste asignado a "${trabajo}". ¡Manos a la obra! Cualquier cosa me dices.`,
-        meta: { kind: "asignado", contract_id: contractId, ot_id: contract.ot_id },
-      });
-    }
-  }
-
-  revalidatePath(`/hr/contratos/${contractId}`);
-}
-
 interface Props {
   params: { id: string };
-  searchParams?: { error?: string };
 }
 
-export default async function ContractPage({ params, searchParams }: Props) {
+const STATUS_CLASS: Record<string, string> = {
+  borrador: "bg-slate-100 text-slate-700",
+  enviado: "bg-amber-100 text-amber-800",
+  firmado: "bg-emerald-100 text-emerald-800",
+  cancelado: "bg-rose-100 text-rose-800",
+};
+
+function fmt(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString("es-CO");
+}
+
+export default async function ContractPage({ params }: Props) {
   const auth = serverClientBoundToCookies();
   const { data: userData } = await auth.auth.getUser();
   if (!userData.user) redirect("/login");
@@ -195,89 +77,57 @@ export default async function ContractPage({ params, searchParams }: Props) {
     ciudad: typeof tecnicoCiudad === "string" ? tecnicoCiudad : null,
   });
   const otHeadline = otTitle(otRes.data);
-
-  const noPdfYet = !contract.pdf_storage_path;
-  const showNoPdfError = searchParams?.error === "no_pdf";
+  const statusClass = STATUS_CLASS[contract.status] ?? "bg-slate-100 text-slate-700";
 
   return (
     <div className="space-y-4 max-w-xl">
-      <Link href="/hr/pipeline" className="text-sm text-slate-500 hover:text-slate-700">
-        ← pipeline
-      </Link>
+      <div className="flex items-center gap-3 text-sm text-slate-500">
+        <Link href="/hr/contratos" className="hover:text-slate-700">
+          ← contratos
+        </Link>
+        <Link href="/hr/pipeline" className="hover:text-slate-700">
+          · pipeline
+        </Link>
+      </div>
       <div className="card p-4">
-        <div className="text-xs text-slate-500 uppercase tracking-wide">
-          Contrato
-        </div>
-        <h1 className="font-semibold text-slate-900 mt-0.5">
-          <Link
-            href={`/hr/tecnicos/${encodeURIComponent(contract.tecnico_id)}`}
-            className="hover:text-amber-700"
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-slate-500 uppercase tracking-wide">
+              Contrato
+            </div>
+            <h1 className="font-semibold text-slate-900 mt-0.5">
+              <Link
+                href={`/hr/tecnicos/${encodeURIComponent(contract.tecnico_id)}`}
+                className="hover:text-amber-700"
+              >
+                {tecLabel}
+              </Link>
+            </h1>
+            <div className="text-sm text-slate-700 mt-1">{otHeadline}</div>
+          </div>
+          <span
+            className={`inline-block rounded-full px-3 py-0.5 text-xs ${statusClass} shrink-0`}
           >
-            {tecLabel}
-          </Link>
-        </h1>
-        <div className="text-sm text-slate-700 mt-1">{otHeadline}</div>
-        <div className="text-sm text-slate-600 mt-1">
-          Estado: <strong>{contract.status}</strong>
+            {contract.status}
+          </span>
+        </div>
+        <div className="text-xs text-slate-500 mt-2 flex flex-wrap gap-3">
+          {contract.sent_at && <span>Enviado {fmt(contract.sent_at)}</span>}
+          {contract.signed_at && <span>Firmado {fmt(contract.signed_at)}</span>}
+          {contract.signed_pdf_storage_path && (
+            <span className="font-mono text-[10px] text-slate-400">
+              {contract.signed_pdf_storage_path}
+            </span>
+          )}
         </div>
         <div className="text-[11px] text-slate-400 font-mono mt-1">
           {contract.id.slice(0, 8)}
           {contract.ot_id && <> · OT {contract.ot_id.slice(0, 8)}</>}
         </div>
-        {showNoPdfError && (
-          <div className="mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
-            Tienes que descargar el borrador primero (eso genera el PDF y lo
-            sube a Storage) — luego puedes enviarlo por WhatsApp.
-          </div>
-        )}
-        <div className="mt-3 flex flex-wrap gap-2">
-          <a
-            href={`/api/contract/${contract.id}/draft`}
-            target="_blank"
-            rel="noreferrer"
-            className="text-sm bg-slate-900 hover:bg-slate-800 text-white rounded-md px-3 py-1.5"
-          >
-            Descargar borrador (PDF)
-          </a>
-          <form action={markSent}>
-            <input type="hidden" name="contract_id" value={contract.id} />
-            <button
-              type="submit"
-              disabled={contract.status !== "borrador" || noPdfYet}
-              title={
-                noPdfYet
-                  ? "Descarga el borrador primero para generar el PDF"
-                  : undefined
-              }
-              className="text-sm bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-md px-3 py-1.5"
-            >
-              {contract.status === "borrador"
-                ? "Enviar contrato por WhatsApp"
-                : "Marcar como enviado"}
-            </button>
-          </form>
+
+        <div className="mt-4 border-t border-slate-100 pt-4">
+          <ContractActions contractId={contract.id} status={contract.status} />
         </div>
-        <form action={markSigned} className="mt-4 space-y-2 border-t border-slate-100 pt-4">
-          <div className="text-sm text-slate-700">
-            Después de firmado offline, sube la ruta del PDF firmado (en el bucket
-            <code className="mx-1 bg-slate-100 px-1 rounded">contratos</code>)
-            y marca como firmado.
-          </div>
-          <input type="hidden" name="contract_id" value={contract.id} />
-          <input
-            type="text"
-            name="signed_path"
-            placeholder={`${contract.id}/signed.pdf`}
-            className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-          />
-          <button
-            type="submit"
-            disabled={contract.status === "firmado"}
-            className="text-sm bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-md px-3 py-1.5"
-          >
-            Marcar como firmado
-          </button>
-        </form>
       </div>
     </div>
   );
