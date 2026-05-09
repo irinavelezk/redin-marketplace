@@ -243,10 +243,20 @@ export default async function TecnicoDetailPage({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-xl font-semibold text-slate-900">
-              {reg.nombre ?? "(sin nombre)"}
+              {tec.nombre ?? reg.nombre ?? "(sin nombre)"}
             </h1>
             <div className="text-sm text-slate-500 mt-1">
-              {tec.phone}
+              {tec.contact_phone ? (
+                <a
+                  href={`tel:${tec.contact_phone}`}
+                  className="text-slate-700 font-medium hover:underline underline-offset-2"
+                >
+                  📞 {tec.contact_phone}
+                </a>
+              ) : (
+                <span className="text-slate-400">Sin teléfono de contacto</span>
+              )}
+              <span className="text-slate-400"> · WA {tec.phone}</span>
               {tec.cedula && <> · cédula {tec.cedula}</>} · {reg.ciudad ?? "—"} ·
               onboarded {fmt(tec.onboarded_at)}
             </div>
