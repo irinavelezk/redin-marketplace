@@ -133,6 +133,13 @@ export type TecnicoExtendedRow = {
   enrichment_data: Json | null;
   // Migration 004
   last_jid: string | null;
+  // Migration 010: first-class display name. NULL on legacy rows whose source
+  // event was never written; consumers fall back to eventos.meta.nombre.
+  nombre: string | null;
+  // Migration 011: callable phone for HR, distinct from `phone` (the WA LID).
+  // NULL on legacy rows until the worker next messages Toño; render "Sin
+  // teléfono de contacto" — never fall back to `phone`, which may be masked.
+  contact_phone: string | null;
 };
 
 export type CandidateDossierRow = {

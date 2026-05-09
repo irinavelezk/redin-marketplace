@@ -20,14 +20,38 @@ export interface ToolError {
   error: string;
   code?: string;
   retryable?: boolean;
+  // Tool-driven control signals. Used when the tool refuses but knows what
+  // the agent should ask the user next — the agent reads these and follows
+  // them verbatim (see Toño's REGLA ABSOLUTA on next_action). Currently
+  // populated by register_tecnico's INCOMPLETE_IDENTITY rejection.
+  next_action?: string;
+  missing?: string[];
+  user_message_hint?: string;
 }
 export type ToolResult<T> = ToolSuccess<T> | ToolError;
 
 export function ok<T>(data: T): ToolSuccess<T> {
   return { ok: true, data };
 }
-export function err(error: string, opts?: { code?: string; retryable?: boolean }): ToolError {
-  return { ok: false, error, code: opts?.code, retryable: opts?.retryable };
+export function err(
+  error: string,
+  opts?: {
+    code?: string;
+    retryable?: boolean;
+    next_action?: string;
+    missing?: string[];
+    user_message_hint?: string;
+  }
+): ToolError {
+  return {
+    ok: false,
+    error,
+    code: opts?.code,
+    retryable: opts?.retryable,
+    next_action: opts?.next_action,
+    missing: opts?.missing,
+    user_message_hint: opts?.user_message_hint,
+  };
 }
 
 // ---------- identify_user ----------
@@ -56,6 +80,12 @@ export interface RegisterTecnicoInput {
   // Accepts "solo" as alias for "individual" — normalized in register-tecnico.ts.
   modalidad: "individual" | "solo" | "cuadrilla" | "lider";
   lider_phone?: string | null;
+  // Migration 011: separate callable phone. May be the same digits as `phone`
+  // (the WhatsApp identity / LID) or different. Required by validateIdentity in
+  // the handler; optional in this shape because the LLM may forget on first
+  // call — the tool returns INCOMPLETE_IDENTITY with next_action="ask_contact_phone"
+  // and the agent loops back.
+  contact_phone?: string | null;
   source?: string;
   actor?: Actor;
 }

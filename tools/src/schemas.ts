@@ -34,12 +34,16 @@ export const TOOL_DECLARATIONS = [
   {
     name: "register_tecnico",
     description:
-      "Crea el perfil de un nuevo técnico. Solo úsalo después de preguntar nombre, ciudad, especialidades y modalidad. Idempotente en phone.",
+      "Crea el perfil de un nuevo técnico. Pide nombre completo (con apellidos), ciudad, especialidades, modalidad, y un teléfono de contacto donde RRHH pueda llamar. Idempotente en phone.\n\nLa herramienta valida la identidad antes de escribir. Si rechaza con `error: 'INCOMPLETE_IDENTITY'`, vendrá con `next_action` ('ask_apellidos' o 'ask_contact_phone'), `missing[]` con lo que falta, y `user_message_hint` con la frase exacta a entregar al técnico (puedes parafrasearla pero pide LO MISMO que dice missing[]). NO insistas si el técnico ya respondió a esa pregunta — el handler decide.",
     parameters: {
       type: "OBJECT",
       properties: {
-        phone: { type: "STRING" },
-        nombre: { type: "STRING" },
+        phone: { type: "STRING", description: "El JID/identidad de WhatsApp (no para llamar)" },
+        nombre: {
+          type: "STRING",
+          description:
+            "Nombre completo del técnico, con apellidos. La herramienta rechaza nombres de un solo token.",
+        },
         ciudad: { type: "STRING" },
         especialidades: { type: "ARRAY", items: { type: "STRING" } },
         modalidad: {
@@ -52,6 +56,11 @@ export const TOOL_DECLARATIONS = [
           type: "STRING",
           description:
             "Solo si el técnico viene con un maestro/líder que ya responde por él",
+        },
+        contact_phone: {
+          type: "STRING",
+          description:
+            "Teléfono donde RRHH puede llamar al técnico. 10 dígitos colombianos o +57 + 10 dígitos. Puede ser el mismo de WhatsApp o uno distinto. La herramienta rechaza si falta o no parece teléfono.",
         },
         source: {
           type: "STRING",
