@@ -101,10 +101,20 @@ export async function submitDecision(formData: FormData): Promise<void> {
     appsheet_sync_pending?: boolean;
     appsheet_delete_pending?: boolean;
     withdrawal_reason?: string | null;
+    profile_complete?: boolean;
   } = { candidate_state: resultingState };
   if (action === "approve") patch.appsheet_sync_pending = true;
   if (action === "revoke") patch.appsheet_delete_pending = true;
   if (action === "reopen") patch.withdrawal_reason = null;
+  // Standard-flow approvals come with a candidate_dossier (Toño submitted it
+  // to put the worker in the queue). The dossier already carries cédula +
+  // ciudad + categorías — every input the enrichment flow would re-collect.
+  // Flip profile_complete so the agent routes returning conversations to
+  // mode=returning instead of mode=enrichment (which would re-ask cédula,
+  // ciudad, etc. from a worker who's already given everything). Legacy
+  // workers approved without a dossier (formDossierId null) keep
+  // profile_complete unchanged — they go through complete_legacy_profile.
+  if (action === "approve" && formDossierId) patch.profile_complete = true;
 
   const { data: casRows, error: casErr } = await supa
     .from("tecnicos_extended")
