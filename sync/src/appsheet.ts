@@ -292,6 +292,85 @@ export class AppSheetReadClient {
     }
     return { deleted: true, alreadyGone: false };
   }
+
+  /**
+   * Edit a TECNICOS row, identified by Row ID + expected Nombre de Tecnico.
+   * Used for soft-delete (set Estado_Redin = "Revocado") and any future
+   * field updates the projector wants to push.
+   *
+   * Same safety belt as deleteTecnico: pre-flights a Find by Row ID and
+   * refuses to edit unless the AppSheet row's current Nombre de Tecnico
+   * equals the expectedNombre. This is the policy guardrail behind "we
+   * never delete anyone in production" — the worst case on drift is
+   * "edit refused, manual reconciliation needed", never "wrong worker
+   * mutated".
+   *
+   * `fields` carries any TECNICOS columns the caller wants to set (e.g.,
+   * { "Estado_Redin": "Revocado" }). The Nombre de Tecnico key is added
+   * automatically — callers should NOT pass it in `fields`.
+   */
+  async editTecnico(
+    rowId: string,
+    expectedNombre: string,
+    fields: Record<string, string>
+  ): Promise<{ edited: true; alreadyGone: boolean }> {
+    if (!rowId) throw new Error("editTecnico: rowId required");
+    if (!expectedNombre) {
+      throw new Error("editTecnico: expectedNombre required for safety");
+    }
+    if (Object.keys(fields).length === 0) {
+      throw new Error("editTecnico: at least one field required");
+    }
+    if ("Nombre de Tecnico" in fields) {
+      throw new Error(
+        "editTecnico: refuse to mutate the Nombre de Tecnico key field; would break identity"
+      );
+    }
+
+    const escapedId = rowId.replace(/"/g, '\\"');
+    const matching = await this.find<AppSheetTecnicoRow>("Tecnicos", {
+      selector: `Filter(Tecnicos, [Row ID] = "${escapedId}")`,
+    });
+    if (matching.length === 0) {
+      // Row gone in AppSheet (manual cleanup, prior delete). Nothing to
+      // edit — caller should treat as a soft-success and clear pending flags.
+      return { edited: true, alreadyGone: true };
+    }
+    if (matching.length > 1) {
+      throw new Error(
+        `AppSheet Tecnicos integrity: ${matching.length} rows match Row ID ${rowId}; refusing to edit`
+      );
+    }
+    const actualNombre = matching[0]?.["Nombre de Tecnico"];
+    if (actualNombre !== expectedNombre) {
+      throw new Error(
+        `AppSheet Tecnicos integrity: row ${rowId} has nombre "${actualNombre ?? "(empty)"}", expected "${expectedNombre}". Refusing to edit (manual reconciliation required).`
+      );
+    }
+
+    const res = await fetch(this.url("Tecnicos"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ApplicationAccessKey: this.accessKey,
+      },
+      body: JSON.stringify({
+        Action: "Edit",
+        Properties: { Locale: "en-US" },
+        Rows: [
+          { "Nombre de Tecnico": expectedNombre, "Row ID": rowId, ...fields },
+        ],
+      }),
+    });
+    if (res.status === 404) return { edited: true, alreadyGone: true };
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(
+        `AppSheet Tecnicos Edit failed: ${res.status} ${body.substring(0, 200)}`
+      );
+    }
+    return { edited: true, alreadyGone: false };
+  }
 }
 
 // AppSheet TECNICOS row shape — the verified column schema (live API

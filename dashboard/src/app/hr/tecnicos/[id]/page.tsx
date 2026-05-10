@@ -143,7 +143,8 @@ export default async function TecnicoDetailPage({
         "candidate_withdrawn",
         "cedula_merged",
         "appsheet_added",
-        "appsheet_deleted",
+        "appsheet_deleted",       // legacy — kept so historical revokes still render
+        "appsheet_revoked",       // new soft-delete by tag (Estado_Redin = Revocado)
         "appsheet_add_skipped_existing",
       ])
       .order("created_at", { ascending: false }),

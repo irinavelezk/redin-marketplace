@@ -317,8 +317,17 @@ async function processDelete(
   attempts: number,
   threshold: number
 ): Promise<ProjectorTickResult> {
+  // Policy (2026-05-09): we DO NOT delete TECNICOS rows from AppSheet.
+  // Per the user, architects rely on the historical roster — deleting a
+  // worker erases context and risks a wrong-row mistake. Instead, the
+  // projector's "revoke" path soft-deletes by setting Estado_Redin =
+  // "Revocado" on the AppSheet row. The row stays visible to architects
+  // with the revoked tag; new work can't be assigned without the architect
+  // explicitly accepting the revoked status. The appsheet_delete_pending
+  // column name is kept (no schema migration needed) but its semantics
+  // are now "AppSheet revoke pending" — comment-only repurposing.
   if (!row.appsheet_row_id) {
-    // Nothing to delete; clear the flag so we don't loop on this forever.
+    // Nothing to revoke in AppSheet; clear the flag so we don't loop forever.
     await deps.supa
       .from("tecnicos_extended")
       .update({
@@ -327,7 +336,7 @@ async function processDelete(
       })
       .eq("tecnico_id", row.tecnico_id);
     await deps.supa.from("eventos").insert({
-      type: "appsheet_deleted",
+      type: "appsheet_revoked",
       entity_id: row.tecnico_id,
       actor: "system:projector",
       meta: { row_id: null, no_row_id: true, attempts },
@@ -338,15 +347,14 @@ async function processDelete(
       attempts,
     };
   }
-  // deleteTecnico requires the worker's nombre as a safety belt — it
-  // pre-flights a Find by Row ID and refuses to delete unless the AppSheet
-  // row's current Nombre de Tecnico matches what we pass. If our DB has
-  // no nombre (legacy rows pre-migration 010), we can't run the integrity
-  // check, so we mark the row as failed and let HR resolve it manually
-  // (either backfill the nombre, or delete the AppSheet row by hand).
+  // editTecnico requires the worker's nombre as the integrity belt — it
+  // pre-flights a Find by Row ID and refuses to mutate unless the AppSheet
+  // row's current Nombre de Tecnico matches. Null nombre (legacy rows
+  // pre-migration 010) blocks the revoke; HR must backfill nombre or
+  // mark Estado_Redin in AppSheet manually.
   if (!row.nombre) {
     const errMsg =
-      "delete_blocked: tecnicos_extended.nombre is null; cannot verify AppSheet row identity. Backfill the nombre or delete the AppSheet row manually.";
+      "revoke_blocked: tecnicos_extended.nombre is null; cannot verify AppSheet row identity. Backfill the nombre or mark Estado_Redin = Revocado in AppSheet manually.";
     await markFailure(deps, row.tecnico_id, errMsg, attempts, threshold);
     return {
       tecnico_id: row.tecnico_id,
@@ -356,9 +364,10 @@ async function processDelete(
     };
   }
   try {
-    const { alreadyGone } = await deps.appsheet.deleteTecnico(
+    const { alreadyGone } = await deps.appsheet.editTecnico(
       row.appsheet_row_id,
-      row.nombre
+      row.nombre,
+      { Estado_Redin: "Revocado" }
     );
     await deps.supa
       .from("tecnicos_extended")
@@ -369,23 +378,25 @@ async function processDelete(
       })
       .eq("tecnico_id", row.tecnico_id);
     await deps.supa.from("eventos").insert({
-      type: "appsheet_deleted",
+      type: "appsheet_revoked",
       entity_id: row.tecnico_id,
       actor: "system:projector",
       meta: {
         row_id: row.appsheet_row_id,
         already_gone: alreadyGone,
         attempts,
+        appsheet_field: "Estado_Redin",
+        appsheet_value: "Revocado",
       },
     });
-    log.info("AppSheet Delete ok", {
+    log.info("AppSheet Revoke ok", {
       tecnico_id: row.tecnico_id,
       row_id: row.appsheet_row_id,
       already_gone: alreadyGone,
     });
     return {
       tecnico_id: row.tecnico_id,
-      action: "deleted",
+      action: "deleted", // semantic name kept for ProjectorTickResult union compat
       attempts,
     };
   } catch (e) {
