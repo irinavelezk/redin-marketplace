@@ -338,9 +338,27 @@ async function processDelete(
       attempts,
     };
   }
+  // deleteTecnico requires the worker's nombre as a safety belt — it
+  // pre-flights a Find by Row ID and refuses to delete unless the AppSheet
+  // row's current Nombre de Tecnico matches what we pass. If our DB has
+  // no nombre (legacy rows pre-migration 010), we can't run the integrity
+  // check, so we mark the row as failed and let HR resolve it manually
+  // (either backfill the nombre, or delete the AppSheet row by hand).
+  if (!row.nombre) {
+    const errMsg =
+      "delete_blocked: tecnicos_extended.nombre is null; cannot verify AppSheet row identity. Backfill the nombre or delete the AppSheet row manually.";
+    await markFailure(deps, row.tecnico_id, errMsg, attempts, threshold);
+    return {
+      tecnico_id: row.tecnico_id,
+      action: "skipped",
+      attempts,
+      error: errMsg,
+    };
+  }
   try {
     const { alreadyGone } = await deps.appsheet.deleteTecnico(
-      row.appsheet_row_id
+      row.appsheet_row_id,
+      row.nombre
     );
     await deps.supa
       .from("tecnicos_extended")

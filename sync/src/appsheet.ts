@@ -217,18 +217,60 @@ export class AppSheetReadClient {
   }
 
   /**
-   * Delete a TECNICOS row by Row ID. Per §8.3, re-deleting a now-gone row is
-   * a no-op success.
+   * Delete a TECNICOS row, identified by both Row ID and the expected
+   * Nombre de Tecnico. Per §8.3, re-deleting a now-gone row is a no-op
+   * success.
    *
-   * Empirical AppSheet Delete behavior on a non-existent Row ID is
-   * UNVERIFIED in this org's codebase. The contract claims 404 = success;
-   * if AppSheet returns 200 with empty body in both cases, the success path
-   * covers it without the 404 branch firing. Verify against a throwaway test
-   * row before promoting to prod.
+   * SAFETY DESIGN. The TECNICOS table's row-key field is "Nombre de Tecnico"
+   * (not "Row ID") — AppSheet's Delete uses the key to identify rows, so
+   * sending only Row ID returns 400. To keep this from accidentally deleting
+   * the wrong worker, the method runs a pre-flight Find by Row ID and
+   * verifies the AppSheet row's current Nombre de Tecnico matches the
+   * expectedNombre passed by the caller. Mismatch → throw, do not delete.
+   * This catches:
+   *   - Row ID and nombre got out of sync between our DB and AppSheet
+   *     (someone manually renamed the AppSheet row)
+   *   - Stale appsheet_row_id pointing at a different worker now
+   *   - Two AppSheet rows sharing the same Row ID (shouldn't happen, but
+   *     would be ambiguous; we abort)
+   *
+   * Required: caller MUST pass the worker's nombre. The projector pulls it
+   * via the same select that loads appsheet_row_id, so this is free.
    */
   async deleteTecnico(
-    rowId: string
+    rowId: string,
+    expectedNombre: string
   ): Promise<{ deleted: true; alreadyGone: boolean }> {
+    if (!rowId) throw new Error("deleteTecnico: rowId required");
+    if (!expectedNombre) {
+      throw new Error("deleteTecnico: expectedNombre required for safety");
+    }
+
+    // Pre-flight: confirm the AppSheet row still has the name we expect.
+    // Filter by Row ID exact match; AppSheet returns 0 or 1 rows.
+    const escapedId = rowId.replace(/"/g, '\\"');
+    const matching = await this.find<AppSheetTecnicoRow>("Tecnicos", {
+      selector: `Filter(Tecnicos, [Row ID] = "${escapedId}")`,
+    });
+    if (matching.length === 0) {
+      // Row already gone (manual cleanup, prior delete, or appsheet_row_id
+      // pointed at a row that no longer exists). Treat as success.
+      return { deleted: true, alreadyGone: true };
+    }
+    if (matching.length > 1) {
+      throw new Error(
+        `AppSheet Tecnicos integrity: ${matching.length} rows match Row ID ${rowId}; refusing to delete`
+      );
+    }
+    const actualNombre = matching[0]?.["Nombre de Tecnico"];
+    if (actualNombre !== expectedNombre) {
+      throw new Error(
+        `AppSheet Tecnicos integrity: row ${rowId} has nombre "${actualNombre ?? "(empty)"}", expected "${expectedNombre}". Refusing to delete (manual reconciliation required).`
+      );
+    }
+
+    // Send Delete with both fields. AppSheet matches by the key column
+    // (Nombre de Tecnico); Row ID is included for the API logs.
     const res = await fetch(this.url("Tecnicos"), {
       method: "POST",
       headers: {
@@ -238,7 +280,7 @@ export class AppSheetReadClient {
       body: JSON.stringify({
         Action: "Delete",
         Properties: { Locale: "en-US" },
-        Rows: [{ "Row ID": rowId }],
+        Rows: [{ "Nombre de Tecnico": expectedNombre, "Row ID": rowId }],
       }),
     });
     if (res.status === 404) return { deleted: true, alreadyGone: true };
