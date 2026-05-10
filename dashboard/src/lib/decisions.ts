@@ -32,54 +32,12 @@ import {
 } from "@redin/shared";
 import { enqueueWhatsApp } from "@/lib/notify";
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
-
-// ---------------------------------------------------------------------------
-// State transition table
-// ---------------------------------------------------------------------------
-
-// (prior_state, decision) → resulting_state. Mirrors LEGAL_TRANSITIONS in
-// shared/src/dossier-types.ts plus the action vocabulary; expressed flat here
-// so submitDecision can resolve in O(1) without re-deriving from the action map.
-const RESULTING_STATE: Partial<
-  Record<CandidateState, Partial<Record<HrAction, CandidateState>>>
-> = {
-  pending: {
-    approve: "approved",
-    reject: "rejected",
-    schedule_call: "needs_call",
-  },
-  needs_call: {
-    approve: "approved",
-    reject: "rejected",
-    unschedule_call: "pending",
-  },
-  approved: {
-    revoke: "revoked",
-  },
-  rejected: {
-    reopen: "screening",
-  },
-  withdrawn: {
-    reopen: "screening",
-  },
-};
-
-export function computeResultingState(
-  prior: CandidateState,
-  action: HrAction
-): CandidateState | null {
-  return RESULTING_STATE[prior]?.[action] ?? null;
-}
+import { computeResultingState } from "@/lib/decisions-state";
+import { composeApprovalMessage } from "@/lib/approval-message";
 
 // ---------------------------------------------------------------------------
 // submitDecision
 // ---------------------------------------------------------------------------
-
-export interface SubmitDecisionResult {
-  ok: boolean;
-  code?: "stale_click" | "stale_dossier" | "illegal_transition" | "not_found" | "db_error";
-  message?: string;
-}
 
 const HR_ACTIONS: readonly HrAction[] = [
   "approve",
@@ -266,8 +224,20 @@ export async function submitDecision(formData: FormData): Promise<void> {
   if (phone) {
     let body: string | null = null;
     if (action === "approve") {
-      body =
+      // Try to surface matching offerable OTs in the worker's ciudad
+      // inline. Falls back to the legacy static text on any error or when
+      // the worker has no ciudad recorded — never blocks approval.
+      const fallback =
         "Listo — tu perfil quedó aprobado. Ya puedes postularte a los trabajos que te muestre. Cuando entre algo que te sirva, te aviso.";
+      try {
+        body = await composeApprovalMessage(supa, tecnicoId, fallback);
+      } catch (e) {
+        console.warn("composeApprovalMessage threw; using fallback", {
+          tecnicoId,
+          error: e instanceof Error ? e.message : String(e),
+        });
+        body = fallback;
+      }
     } else if (action === "reject") {
       body =
         "Hola, revisamos tu perfil y por ahora no podemos seguir adelante. Si quieres conversarlo, puedes responder y te contactamos.";

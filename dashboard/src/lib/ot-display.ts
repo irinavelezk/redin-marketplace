@@ -49,3 +49,26 @@ export function tecnicoLabel(args: {
   if (nombre) return nombre;
   return "(sin nombre)";
 }
+
+// Parses Valor_Estimado from an ots_mirror.data blob. Returns { num, label }
+// where label is COP-formatted ("$658.192") or null when the field is
+// missing/non-numeric. Used by the proactive approval message and any
+// future "show me available work" surface.
+export function otValorEstimado(data: unknown): {
+  num: number | null;
+  label: string | null;
+} {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { num: null, label: null };
+  }
+  const raw = (data as Record<string, unknown>).Valor_Estimado;
+  if (typeof raw !== "string") return { num: null, label: null };
+  const num = Number.parseFloat(raw.replace(/[^\d.-]/g, ""));
+  if (!Number.isFinite(num) || num <= 0) return { num: null, label: null };
+  const label = new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  }).format(num);
+  return { num, label };
+}
