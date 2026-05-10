@@ -186,94 +186,6 @@ async function loadDisplayName(
   return null;
 }
 
-// Profile snapshot injected into [session_profile] every turn so the agent
-// has authoritative ground truth for ciudad, skills, and contact_phone.
-// The model can't be trusted to remember these across turns — and worse,
-// without them it tends to fabricate (e.g. claiming the worker is in a
-// city different from their actual ciudad). Pulling fresh per turn also
-// means HR-driven changes (skill correction, ciudad fix) propagate
-// immediately. Per memory feedback_agent_state_freshness.md.
-interface ProfileSnapshot {
-  ciudad: string | null;
-  categorias: string[];
-  subcategorias: string[];
-  contact_phone: string | null;
-  has_dossier: boolean;
-}
-
-async function loadProfileSnapshot(
-  sb: ServerClient,
-  tecnico_id: string
-): Promise<ProfileSnapshot> {
-  const [tecRes, regRes, dossierRes] = await Promise.all([
-    sb
-      .from("tecnicos_extended")
-      .select("contact_phone")
-      .eq("tecnico_id", tecnico_id)
-      .maybeSingle(),
-    sb
-      .from("eventos")
-      .select("meta")
-      .eq("type", "tecnico_registered")
-      .eq("entity_id", tecnico_id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    sb
-      .from("candidate_dossiers")
-      .select("id, payload")
-      .eq("tecnico_id", tecnico_id)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-  ]);
-
-  const meta = regRes.data?.meta as Record<string, unknown> | null | undefined;
-  const ciudad =
-    meta && typeof meta.ciudad === "string" ? (meta.ciudad as string) : null;
-
-  const payload = dossierRes.data?.payload as
-    | Record<string, unknown>
-    | null
-    | undefined;
-  const cats =
-    payload && Array.isArray(payload.categorias_principales)
-      ? (payload.categorias_principales as unknown[]).filter(
-          (x): x is string => typeof x === "string"
-        )
-      : [];
-  const subs =
-    payload && Array.isArray(payload.subcategorias)
-      ? (payload.subcategorias as unknown[]).filter(
-          (x): x is string => typeof x === "string"
-        )
-      : [];
-
-  return {
-    ciudad,
-    categorias: cats,
-    subcategorias: subs,
-    contact_phone: tecRes.data?.contact_phone ?? null,
-    has_dossier: !!dossierRes.data,
-  };
-}
-
-// Render the snapshot into a one-line context tag the model reads as ground
-// truth. Empty fields are omitted (not `null`-spelled) to keep the line
-// scannable for the model.
-function renderSessionProfile(p: ProfileSnapshot): string | null {
-  const parts: string[] = [];
-  if (p.ciudad) parts.push(`ciudad=${p.ciudad}`);
-  if (p.categorias.length > 0)
-    parts.push(`categorias=${p.categorias.join("|")}`);
-  if (p.subcategorias.length > 0)
-    parts.push(`subcategorias=${p.subcategorias.join("|")}`);
-  if (p.contact_phone) parts.push(`contact_phone=${p.contact_phone}`);
-  parts.push(`has_dossier=${p.has_dossier ? "true" : "false"}`);
-  if (parts.length === 1 && parts[0] === "has_dossier=false") return null;
-  return `[session_profile: ${parts.join(", ")}]`;
-}
-
 // Classify whether this is a NEW conversation (cost kill switch applies) or
 // an in-flight one (always proceed). Per contract §9.3:
 //   in-flight = phone has tecnicos_extended row in screening | pending |
@@ -386,7 +298,6 @@ export async function handleMessage(
   let currentCandidateState: CandidateState | null = null;
   let profileComplete = false;
   let nombreFromRow: string | null = null;
-  let profileSnapshot: ProfileSnapshot | null = null;
   {
     const { data: existing } = await baseCtx.supabase
       .from("tecnicos_extended")
@@ -404,10 +315,7 @@ export async function handleMessage(
       } else {
         routingMode = "screening";
       }
-      [nombreFromRow, profileSnapshot] = await Promise.all([
-        loadDisplayName(baseCtx.supabase, existing.tecnico_id),
-        loadProfileSnapshot(baseCtx.supabase, existing.tecnico_id),
-      ]);
+      nombreFromRow = await loadDisplayName(baseCtx.supabase, existing.tecnico_id);
     }
   }
 
@@ -534,9 +442,6 @@ export async function handleMessage(
   };
 
   // Inject session context. mode + name guide Toño's three-case routing.
-  // [session_profile] is the new ground-truth tag added 2026-05-09 — see
-  // ProfileSnapshot above. The agent must read ciudad/categorias from it
-  // (never from memory) and must pass ciudad to read_pending_ots when set.
   const contextLines = [`[session_phone: ${phone}]`];
   if (currentCandidateState) {
     contextLines.push(
@@ -546,10 +451,6 @@ export async function handleMessage(
     contextLines.push(`[session_state: candidate_state=null, mode=${routingMode}]`);
   }
   if (nombreFromRow) contextLines.push(`[session_name: ${nombreFromRow}]`);
-  if (profileSnapshot) {
-    const profileLine = renderSessionProfile(profileSnapshot);
-    if (profileLine) contextLines.push(profileLine);
-  }
   const userMessage = `${contextLines.join("\n")}\n${wrapData(text, "tecnico")}`;
 
   const errorsCollected: TurnError[] = [];

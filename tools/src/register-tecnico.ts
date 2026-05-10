@@ -84,7 +84,7 @@ function validateIdentity(input: {
       next_action: "ask_contact_phone",
       missing,
       user_message_hint:
-        "Ese número no parece colombiano. Pásame uno de 10 dígitos, por ejemplo 313 202 2941.",
+        "Ese número no me cuadra. Pásame uno de 10 dígitos, por favor.",
     };
   }
   return {
