@@ -1,15 +1,105 @@
-// HR pipeline — OTs and their postulaciones, ranked by disponibilidad → calidad → costo.
-// Auth-gated via Supabase Auth.
+// HR pipeline — OTs in state "4. Coordinar – Listo para ejecutar" with a
+// per-OT status pill that tells HR what action is owed:
+//
+//   Esperando decisión        — postulados exist, no preselección yet
+//   Listo para contrato       — preseleccionados, contract not sent
+//   Contrato enviado          — sent, awaiting signature
+//   Asignado en Redin         — contract signed; waiting on architect to
+//                               confirm the assignment in AppSheet
+//   Sin postulaciones         — open OT, nobody applied
+//
+// Sort: needs-HR-action first; passive states sink. Each card carries a
+// "Compartir con arquitecto" button that copies a signed public link
+// (lib/public-token) for the architect-facing slim view.
+//
+// The internal candidate ranking (disponibilidad → calidad → costo) is
+// preserved per OT — calidad will become the primary signal for the future
+// autonomous-assignment agent, so HR getting accustomed to it now matters.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
 import { otTitle, tecnicoLabel } from "@/lib/ot-display";
+import { signOtPublicToken } from "@/lib/public-token";
 import { OFFERABLE_ESTADO } from "@redin/tools/read-pending-ots";
-import type { PostulacionRow } from "@redin/shared";
+import type { PostulacionRow, ContratoStatus } from "@redin/shared";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import Link from "next/link";
+import { CopyShareLinkButton } from "@/components/CopyShareLinkButton";
 
 export const dynamic = "force-dynamic";
+
+type OtStatusKey =
+  | "esperando_decision"
+  | "listo_para_contrato"
+  | "contrato_enviado"
+  | "asignado_en_redin"
+  | "sin_postulaciones";
+
+interface OtStatus {
+  key: OtStatusKey;
+  label: string;
+  className: string;
+  sortIndex: number;
+}
+
+function computeOtStatus(args: {
+  postCount: number;
+  postStates: Set<string>;
+  contractStates: Set<ContratoStatus>;
+}): OtStatus {
+  const { postCount, postStates, contractStates } = args;
+
+  if (postCount === 0) {
+    return {
+      key: "sin_postulaciones",
+      label: "Sin postulaciones",
+      className: "bg-slate-100 text-slate-600",
+      sortIndex: 4,
+    };
+  }
+  if (postStates.has("asignado") || contractStates.has("firmado")) {
+    return {
+      key: "asignado_en_redin",
+      label: "Asignado en Redin",
+      className: "bg-slate-900 text-white",
+      sortIndex: 5,
+    };
+  }
+  if (contractStates.has("enviado")) {
+    return {
+      key: "contrato_enviado",
+      label: "Contrato enviado",
+      className: "bg-blue-100 text-blue-800",
+      sortIndex: 3,
+    };
+  }
+  if (postStates.has("preseleccionado")) {
+    return {
+      key: "listo_para_contrato",
+      label: "Listo para contrato",
+      className: "bg-emerald-100 text-emerald-800",
+      sortIndex: 2,
+    };
+  }
+  return {
+    key: "esperando_decision",
+    label: "Esperando decisión",
+    className: "bg-amber-100 text-amber-800",
+    sortIndex: 1,
+  };
+}
+
+function publicOriginFromHeaders(): string {
+  // NEXT_PUBLIC_SITE_URL is the canonical origin (Railway assigns it as an
+  // env var); fall back to request headers when it's not set (e.g. local).
+  const fromEnv = process.env.NEXT_PUBLIC_SITE_URL;
+  if (fromEnv) return fromEnv.replace(/\/$/, "");
+  const h = headers();
+  const host = h.get("host") ?? "localhost:3000";
+  const proto = h.get("x-forwarded-proto") ?? "https";
+  return `${proto}://${host}`;
+}
 
 export default async function HrPipelinePage() {
   const auth = serverClientBoundToCookies();
@@ -17,13 +107,12 @@ export default async function HrPipelinePage() {
   if (!userData.user) redirect("/login");
 
   const supa = serviceClient();
+  const origin = publicOriginFromHeaders();
 
   // Pipeline shows ONLY assignable OTs — state "4. Coordinar – Listo para
-  // ejecutar". Earlier states aren't ready for a worker to take; later
-  // states are already in motion or closed. The literal lives in
-  // @redin/tools/read-pending-ots so this view, the read_pending_ots tool,
-  // and (eventually) the AppSheet sync Selector all reference one source
-  // of truth.
+  // ejecutar". The literal lives in @redin/tools/read-pending-ots so this
+  // view, the read_pending_ots tool, and (eventually) the AppSheet sync
+  // Selector all reference one source of truth.
   const { data: offerableOts } = await supa
     .from("ots_mirror")
     .select("row_id, ciudad, especialidad, estado, data, synced_at")
@@ -32,19 +121,32 @@ export default async function HrPipelinePage() {
   const pendingOts = offerableOts ?? [];
   const offerableIds = pendingOts.map((o) => o.row_id);
 
-  // Postulaciones are pulled scoped to the offerable OTs only, so we don't
-  // ship the whole table over the wire just to filter it client-side.
-  const { data: postsRaw } = offerableIds.length
-    ? await supa
-        .from("postulaciones")
-        .select("*")
-        .in("ot_id", offerableIds)
-    : { data: [] as PostulacionRow[] };
-  const allPostsForPending: PostulacionRow[] = postsRaw ?? [];
+  // Postulaciones AND contratos scoped to the offerable OTs only — both
+  // feed the per-OT status pill computation and the ranking display.
+  const [postsRes, contratosRes] = offerableIds.length
+    ? await Promise.all([
+        supa.from("postulaciones").select("*").in("ot_id", offerableIds),
+        supa
+          .from("contratos")
+          .select("ot_id, status")
+          .in("ot_id", offerableIds),
+      ])
+    : [
+        { data: [] as PostulacionRow[] },
+        { data: [] as { ot_id: string | null; status: ContratoStatus }[] },
+      ];
+  const allPostsForPending: PostulacionRow[] = postsRes.data ?? [];
+  const contratoStatesByOt = new Map<string, Set<ContratoStatus>>();
+  for (const c of contratosRes.data ?? []) {
+    if (!c.ot_id) continue;
+    const s = contratoStatesByOt.get(c.ot_id) ?? new Set<ContratoStatus>();
+    s.add(c.status);
+    contratoStatesByOt.set(c.ot_id, s);
+  }
 
-  // Internal performance (Jose + arquitectos via /hr/evaluations). Replaces
-  // the legacy customer-stars ratings — Phase 1 has no direct customer
-  // relationship, so calidad is scored from inside.
+  // Internal performance (Jose + arquitectos via /hr/evaluations). calidad
+  // is the seed for the future autonomous-assignment agent; we keep it
+  // visible on the pipeline so HR is calibrated to the signal early.
   const tecnicoIds = [...new Set(allPostsForPending.map((p) => p.tecnico_id))];
   const { data: perfRows } = tecnicoIds.length
     ? await supa
@@ -73,9 +175,6 @@ export default async function HrPipelinePage() {
     openPosByTec.set(r.tecnico_id, (openPosByTec.get(r.tecnico_id) ?? 0) + 1);
   }
 
-  // Migration 010: bulk-load nombre per applicant so the pipeline shows real
-  // names instead of `tecnico_id.slice(0, 8)`. Falls back to the prefix when
-  // the column is null on legacy rows.
   const { data: tecRows } = tecnicoIds.length
     ? await supa
         .from("tecnicos_extended")
@@ -87,9 +186,6 @@ export default async function HrPipelinePage() {
     nombreByTec.set(r.tecnico_id, r.nombre ?? null);
   }
 
-  // Worker ciudad lives in eventos.meta.ciudad (tecnico_registered) — not on
-  // tecnicos_extended. Bulk-load so HR can spot worker-vs-OT city mismatches
-  // without clicking through to the worker detail.
   const { data: ciudadEvents } = tecnicoIds.length
     ? await supa
         .from("eventos")
@@ -106,12 +202,40 @@ export default async function HrPipelinePage() {
     ciudadByTec.set(e.entity_id, c);
   }
 
-  // Group posts by ot.
   const postsByOt = new Map<string, PostulacionRow[]>();
   for (const p of allPostsForPending) {
     if (!postsByOt.has(p.ot_id)) postsByOt.set(p.ot_id, []);
     postsByOt.get(p.ot_id)!.push(p);
   }
+
+  // Pre-compute status + sort key for every OT so we can re-order before
+  // rendering. Stable secondary sort by synced_at desc.
+  interface OtRow {
+    ot: (typeof pendingOts)[number];
+    posts: PostulacionRow[];
+    status: OtStatus;
+  }
+  const rows: OtRow[] = pendingOts.map((ot) => {
+    const posts = postsByOt.get(ot.row_id) ?? [];
+    const postStates = new Set(posts.map((p) => p.state));
+    const contractStates = contratoStatesByOt.get(ot.row_id) ?? new Set();
+    const status = computeOtStatus({
+      postCount: posts.length,
+      postStates,
+      contractStates,
+    });
+    return { ot, posts, status };
+  });
+  rows.sort((a, b) => {
+    if (a.status.sortIndex !== b.status.sortIndex) {
+      return a.status.sortIndex - b.status.sortIndex;
+    }
+    // Tiebreak: most-recently-synced first, so freshness still matters.
+    return (
+      new Date(b.ot.synced_at ?? 0).getTime() -
+      new Date(a.ot.synced_at ?? 0).getTime()
+    );
+  });
 
   return (
     <div className="space-y-6">
@@ -145,30 +269,33 @@ export default async function HrPipelinePage() {
         </div>
       </div>
       <p className="text-sm text-slate-600">
-        OTs en estado <strong>4. Coordinar – Listo para ejecutar</strong> —
-        las únicas asignables a un técnico. Orden de candidatos por OT:
-        disponibilidad → calidad → costo.
+        OTs en estado <strong>4. Coordinar – Listo para ejecutar</strong>.
+        Ordenadas por acción pendiente: las que necesitan tu decisión arriba.
+        Comparte con un arquitecto para que vea las postulaciones sin entrar
+        a este sistema.
       </p>
-      {pendingOts.length === 0 && (
+      {rows.length === 0 && (
         <div className="card p-4 text-sm text-slate-500">
           No hay OTs listas para asignar en este momento.
         </div>
       )}
       <ul className="space-y-4">
-        {pendingOts.map((ot) => {
-          const posts = postsByOt.get(ot.row_id) ?? [];
+        {rows.map(({ ot, posts, status }) => {
           const ranked = rankPostulaciones({
             postulaciones: posts,
             openPosByTecnico: openPosByTec,
             ratingByTecnico: ratingByTec,
             rateByTecnico: new Map(),
           });
+          const publicUrl = `${origin}/publico/ot/${signOtPublicToken(ot.row_id)}`;
+          const preselCount = posts.filter((p) => p.state === "preseleccionado").length;
+          const postuladoCount = posts.filter((p) => p.state === "postulado").length;
           return (
             <li key={ot.row_id} className="card p-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
                   <div className="text-sm text-slate-500">
-                    {ot.ciudad ?? "—"} · {ot.especialidad ?? "—"} · {ot.estado ?? "—"}
+                    {ot.ciudad ?? "—"} · {ot.especialidad ?? "—"}
                   </div>
                   <div className="font-medium text-slate-900 truncate">
                     {otTitle(ot)}
@@ -177,18 +304,21 @@ export default async function HrPipelinePage() {
                     {ot.row_id.slice(0, 8)}
                   </div>
                 </div>
-                <Link
-                  href={`/hr/shortlist/${encodeURIComponent(ot.row_id)}`}
-                  className="text-sm text-amber-600 hover:text-amber-700 font-medium shrink-0"
-                >
-                  Shortlist →
-                </Link>
-              </div>
-              {posts.length === 0 ? (
-                <div className="mt-2 text-sm text-slate-500">
-                  Sin postulaciones aún.
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <span
+                    className={`text-xs rounded-full px-2 py-0.5 ${status.className}`}
+                  >
+                    {status.label}
+                  </span>
+                  <div className="text-[11px] text-slate-500 tabular-nums">
+                    {posts.length === 0
+                      ? "0 postulaciones"
+                      : `${posts.length} ${posts.length === 1 ? "postulación" : "postulaciones"}${preselCount ? ` · ${preselCount} preseleccionada${preselCount === 1 ? "" : "s"}` : ""}${postuladoCount && preselCount ? ` · ${postuladoCount} esperando` : ""}`}
+                  </div>
                 </div>
-              ) : (
+              </div>
+
+              {ranked.length > 0 && (
                 <ul className="mt-3 space-y-1 text-sm">
                   {ranked.slice(0, 5).map((r) => (
                     <li
@@ -216,6 +346,16 @@ export default async function HrPipelinePage() {
                   )}
                 </ul>
               )}
+
+              <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-4">
+                <Link
+                  href={`/hr/shortlist/${encodeURIComponent(ot.row_id)}`}
+                  className="text-sm text-amber-600 hover:text-amber-700 font-medium"
+                >
+                  Ver postulaciones →
+                </Link>
+                <CopyShareLinkButton url={publicUrl} />
+              </div>
             </li>
           );
         })}
