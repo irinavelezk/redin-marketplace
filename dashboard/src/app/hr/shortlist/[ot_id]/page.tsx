@@ -7,7 +7,7 @@ import { enqueueWhatsApp, tecnicoNotificationContext } from "@/lib/notify";
 import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import type { PostulacionState } from "@redin/shared";
+import type { ContratoStatus, PostulacionState } from "@redin/shared";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -218,6 +218,31 @@ export default async function HrShortlistPage({ params }: Props) {
     ciudadByTec.set(e.entity_id, c);
   }
 
+  // Active contract for this OT — if one exists (any non-cancelado status),
+  // every per-worker write button is disabled. The OT is functionally
+  // locked: at most one active contract per OT, by design. Future actions
+  // for the contracted worker (subir firmado, cancelar) live on the
+  // contract page, not here.
+  //
+  // The contratos table has no created_at column today; we order by sent_at
+  // desc nulls first so an in-flight borrador wins over an older
+  // sent/firmado on the rare double-contract edge case.
+  const { data: contractsForOt } = await supa
+    .from("contratos")
+    .select("id, tecnico_id, status, sent_at, signed_at")
+    .eq("ot_id", otId)
+    .order("sent_at", { ascending: false, nullsFirst: true });
+  const activeContract = (contractsForOt ?? []).find(
+    (c) => c.status !== "cancelado"
+  );
+  const contractWorkerId = activeContract?.tecnico_id ?? null;
+  const contractStatusLabel: Record<ContratoStatus, string> = {
+    borrador: "Borrador",
+    enviado: "Enviado",
+    firmado: "Firmado",
+    cancelado: "Cancelado",
+  };
+
   const ranked = rankPostulaciones({
     postulaciones: posts ?? [],
     openPosByTecnico: openPosByTec,
@@ -240,69 +265,149 @@ export default async function HrShortlistPage({ params }: Props) {
           {otId.slice(0, 8)}
         </div>
       </div>
-      <ul className="space-y-2">
-        {ranked.map((r) => (
-          <li key={r.postulacion.id} className="card p-4">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <Link
-                  href={`/hr/tecnicos/${encodeURIComponent(r.postulacion.tecnico_id)}`}
-                  className="font-medium text-slate-900 hover:text-amber-700"
-                >
-                  {tecnicoLabel({
-                    nombre: nombreByTec.get(r.postulacion.tecnico_id) ?? null,
-                    ciudad: ciudadByTec.get(r.postulacion.tecnico_id) ?? null,
-                  })}
-                </Link>
-                <div className="text-xs text-slate-500">
-                  Estado: {r.postulacion.state} · Aplicó{" "}
-                  {new Date(r.postulacion.applied_at).toLocaleString("es-CO")}
-                </div>
-                <div className="text-xs text-slate-500 mt-1">
-                  dispo {r.scores.disponibilidad.toFixed(2)} · calidad{" "}
-                  {r.scores.calidad?.toFixed(1) ?? "—"}
-                </div>
+
+      {activeContract && (
+        <div className="card p-4 border-l-4 border-blue-500 bg-blue-50">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-wide text-blue-700">
+                Contrato en curso ·{" "}
+                {contractStatusLabel[activeContract.status]}
               </div>
-              <div className="flex flex-col gap-1">
-                <form action={decide}>
-                  <input type="hidden" name="postulacion_id" value={r.postulacion.id} />
-                  <input type="hidden" name="ot_id" value={otId} />
-                  <input type="hidden" name="state" value="preseleccionado" />
-                  <button
-                    type="submit"
-                    className="text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-md px-3 py-1"
-                    disabled={r.postulacion.state === "preseleccionado" || r.postulacion.state === "asignado"}
-                  >
-                    Preseleccionar
-                  </button>
-                </form>
-                <form action={decide}>
-                  <input type="hidden" name="postulacion_id" value={r.postulacion.id} />
-                  <input type="hidden" name="ot_id" value={otId} />
-                  <input type="hidden" name="state" value="rechazado" />
-                  <button
-                    type="submit"
-                    className="text-xs border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-md px-3 py-1"
-                  >
-                    Rechazar
-                  </button>
-                </form>
-                {r.postulacion.state === "preseleccionado" && (
-                  <form action={createContract}>
-                    <input type="hidden" name="tecnico_id" value={r.postulacion.tecnico_id} />
-                    <input type="hidden" name="ot_id" value={otId} />
-                    <button
-                      type="submit"
-                      className="text-xs bg-slate-900 hover:bg-slate-800 text-white rounded-md px-3 py-1"
-                    >
-                      Generar contrato
-                    </button>
-                  </form>
+              <div className="font-medium text-slate-900 mt-0.5">
+                {tecnicoLabel({
+                  nombre:
+                    nombreByTec.get(activeContract.tecnico_id) ?? null,
+                  ciudad:
+                    ciudadByTec.get(activeContract.tecnico_id) ?? null,
+                })}
+              </div>
+              <div className="text-xs text-slate-600 mt-1">
+                {activeContract.signed_at && (
+                  <>Firmado {new Date(activeContract.signed_at).toLocaleString("es-CO")}</>
+                )}
+                {!activeContract.signed_at && activeContract.sent_at && (
+                  <>Enviado {new Date(activeContract.sent_at).toLocaleString("es-CO")}</>
+                )}
+                {!activeContract.signed_at && !activeContract.sent_at && (
+                  <>Borrador en preparación</>
                 )}
               </div>
+              <div className="text-xs text-slate-600 mt-2">
+                Las decisiones de preselección y contratación están bloqueadas
+                hasta que este contrato se complete o se cancele.
+              </div>
             </div>
-          </li>
-        ))}
+            <Link
+              href={`/hr/contratos/${activeContract.id}`}
+              className="text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md px-3 py-1.5 shrink-0"
+            >
+              Ver contrato →
+            </Link>
+          </div>
+        </div>
+      )}
+
+      <ul className="space-y-2">
+        {ranked.map((r) => {
+          const isContractedWorker =
+            !!contractWorkerId && contractWorkerId === r.postulacion.tecnico_id;
+          const lockedByContract = !!activeContract;
+          const canPreseleccionar =
+            !lockedByContract &&
+            r.postulacion.state !== "preseleccionado" &&
+            r.postulacion.state !== "asignado";
+          const canRechazar =
+            !lockedByContract && r.postulacion.state !== "rechazado";
+          const canGenerarContrato =
+            !lockedByContract && r.postulacion.state === "preseleccionado";
+
+          return (
+            <li
+              key={r.postulacion.id}
+              className={`card p-4 ${
+                lockedByContract && !isContractedWorker ? "opacity-60" : ""
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <Link
+                    href={`/hr/tecnicos/${encodeURIComponent(r.postulacion.tecnico_id)}`}
+                    className="font-medium text-slate-900 hover:text-amber-700"
+                  >
+                    {tecnicoLabel({
+                      nombre: nombreByTec.get(r.postulacion.tecnico_id) ?? null,
+                      ciudad: ciudadByTec.get(r.postulacion.tecnico_id) ?? null,
+                    })}
+                  </Link>
+                  <div className="text-xs text-slate-500">
+                    Estado: {r.postulacion.state} · Aplicó{" "}
+                    {new Date(r.postulacion.applied_at).toLocaleString("es-CO")}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    dispo {r.scores.disponibilidad.toFixed(2)} · calidad{" "}
+                    {r.scores.calidad?.toFixed(1) ?? "—"}
+                  </div>
+                </div>
+                <div className="flex flex-col gap-1 shrink-0">
+                  {lockedByContract ? (
+                    isContractedWorker ? (
+                      <Link
+                        href={`/hr/contratos/${activeContract.id}`}
+                        className="text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-md px-3 py-1 text-center"
+                      >
+                        Ver contrato →
+                      </Link>
+                    ) : (
+                      <span className="text-[11px] text-slate-500 italic text-right max-w-[10rem]">
+                        Bloqueado: contrato en curso con otro técnico
+                      </span>
+                    )
+                  ) : (
+                    <>
+                      <form action={decide}>
+                        <input type="hidden" name="postulacion_id" value={r.postulacion.id} />
+                        <input type="hidden" name="ot_id" value={otId} />
+                        <input type="hidden" name="state" value="preseleccionado" />
+                        <button
+                          type="submit"
+                          className="text-xs bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-md px-3 py-1 w-full"
+                          disabled={!canPreseleccionar}
+                        >
+                          Preseleccionar
+                        </button>
+                      </form>
+                      <form action={decide}>
+                        <input type="hidden" name="postulacion_id" value={r.postulacion.id} />
+                        <input type="hidden" name="ot_id" value={otId} />
+                        <input type="hidden" name="state" value="rechazado" />
+                        <button
+                          type="submit"
+                          className="text-xs border border-slate-300 hover:bg-slate-50 disabled:opacity-50 text-slate-700 rounded-md px-3 py-1 w-full"
+                          disabled={!canRechazar}
+                        >
+                          Rechazar
+                        </button>
+                      </form>
+                      {canGenerarContrato && (
+                        <form action={createContract}>
+                          <input type="hidden" name="tecnico_id" value={r.postulacion.tecnico_id} />
+                          <input type="hidden" name="ot_id" value={otId} />
+                          <button
+                            type="submit"
+                            className="text-xs bg-slate-900 hover:bg-slate-800 text-white rounded-md px-3 py-1 w-full"
+                          >
+                            Generar contrato
+                          </button>
+                        </form>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            </li>
+          );
+        })}
         {ranked.length === 0 && (
           <li className="card p-4 text-sm text-slate-500">
             Sin postulaciones para esta OT.

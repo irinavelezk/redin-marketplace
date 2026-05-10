@@ -123,25 +123,45 @@ export default async function HrPipelinePage() {
 
   // Postulaciones AND contratos scoped to the offerable OTs only — both
   // feed the per-OT status pill computation and the ranking display.
+  // We pull contract id so we can link directly to the active contract
+  // (any non-cancelado) from the pipeline card. The schema enforces "at
+  // most one active per OT" by convention, not by constraint — if we ever
+  // see two, last-write-wins on the map below and a follow-up data audit
+  // is warranted.
   const [postsRes, contratosRes] = offerableIds.length
     ? await Promise.all([
         supa.from("postulaciones").select("*").in("ot_id", offerableIds),
         supa
           .from("contratos")
-          .select("ot_id, status")
-          .in("ot_id", offerableIds),
+          .select("id, ot_id, status, sent_at")
+          .in("ot_id", offerableIds)
+          .order("sent_at", { ascending: false, nullsFirst: true }),
       ])
     : [
         { data: [] as PostulacionRow[] },
-        { data: [] as { ot_id: string | null; status: ContratoStatus }[] },
+        {
+          data: [] as {
+            id: string;
+            ot_id: string | null;
+            status: ContratoStatus;
+            sent_at: string | null;
+          }[],
+        },
       ];
   const allPostsForPending: PostulacionRow[] = postsRes.data ?? [];
   const contratoStatesByOt = new Map<string, Set<ContratoStatus>>();
+  // Active contract id per OT — first non-cancelado we encounter. Order is
+  // sent_at desc nulls first so an in-flight borrador (no sent_at yet)
+  // wins over an older signed/enviado on the same OT.
+  const activeContractIdByOt = new Map<string, string>();
   for (const c of contratosRes.data ?? []) {
     if (!c.ot_id) continue;
     const s = contratoStatesByOt.get(c.ot_id) ?? new Set<ContratoStatus>();
     s.add(c.status);
     contratoStatesByOt.set(c.ot_id, s);
+    if (c.status !== "cancelado" && !activeContractIdByOt.has(c.ot_id)) {
+      activeContractIdByOt.set(c.ot_id, c.id);
+    }
   }
 
   // Internal performance (Jose + arquitectos via /hr/evaluations). calidad
@@ -347,13 +367,36 @@ export default async function HrPipelinePage() {
                 </ul>
               )}
 
-              <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-4">
-                <Link
-                  href={`/hr/shortlist/${encodeURIComponent(ot.row_id)}`}
-                  className="text-sm text-amber-600 hover:text-amber-700 font-medium"
-                >
-                  Ver postulaciones →
-                </Link>
+              <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-4 flex-wrap">
+                {(() => {
+                  const activeContractId = activeContractIdByOt.get(ot.row_id);
+                  if (activeContractId) {
+                    return (
+                      <>
+                        <Link
+                          href={`/hr/contratos/${activeContractId}`}
+                          className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                          Ver contrato →
+                        </Link>
+                        <Link
+                          href={`/hr/shortlist/${encodeURIComponent(ot.row_id)}`}
+                          className="text-xs text-slate-500 hover:text-slate-700"
+                        >
+                          Ver postulaciones
+                        </Link>
+                      </>
+                    );
+                  }
+                  return (
+                    <Link
+                      href={`/hr/shortlist/${encodeURIComponent(ot.row_id)}`}
+                      className="text-sm text-amber-600 hover:text-amber-700 font-medium"
+                    >
+                      Ver postulaciones →
+                    </Link>
+                  );
+                })()}
                 <CopyShareLinkButton url={publicUrl} />
               </div>
             </li>
