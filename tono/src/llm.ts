@@ -132,12 +132,50 @@ function toAnthropicMessages(
   const out: Anthropic.MessageParam[] = [];
   let pendingCallIds: string[] | null = null;
   let turnIdx = 0;
+
+  // Anthropic's API enforces a strict pairing: every tool_use block in an
+  // assistant message must be answered by a tool_result block in the next
+  // user message, with matching tool_use_id and the same count. Any
+  // violation (orphan tool_result with no preceding tool_use, or a
+  // tool_use that's never answered) returns 400 and the entire turn
+  // crashes. The previous code synthesized `toolu_orphan_*` placeholders
+  // as a defensive fallback, but the API rejects them at the pairing
+  // check before content matters. So we sanitize:
+  //
+  //   - Orphan tool_response (no pendingCallIds) → SKIP entirely.
+  //   - Tool_call followed by anything other than a matching tool_response
+  //     → before emitting the next non-response block, flush the dangling
+  //     tool_use as a synthetic error result so the assistant message
+  //     stays paired.
+  //   - Count mismatch between pendingCallIds and t.responses → SKIP the
+  //     tool_response and synthesize errors for the dangling calls.
+  //
+  // Net effect: the model loses some tool-result context on corrupted
+  // history but the conversation continues instead of every turn 400'ing.
+  const flushDanglingToolUse = (): void => {
+    if (!pendingCallIds || pendingCallIds.length === 0) return;
+    out.push({
+      role: "user",
+      content: pendingCallIds.map((id) => ({
+        type: "tool_result" as const,
+        tool_use_id: id,
+        content:
+          "[[tool call not completed in this session — proceed without this result]]",
+        is_error: true,
+      })),
+    });
+    pendingCallIds = null;
+  };
+
   for (const t of history) {
     if (t.role === "user") {
+      flushDanglingToolUse();
       out.push({ role: "user", content: t.text });
     } else if (t.role === "assistant") {
+      flushDanglingToolUse();
       out.push({ role: "assistant", content: t.text });
     } else if (t.role === "tool_call") {
+      flushDanglingToolUse();
       const ids = t.calls.map((_c, i) => `toolu_h${turnIdx}_${i}`);
       pendingCallIds = ids;
       out.push({
@@ -151,21 +189,47 @@ function toAnthropicMessages(
       });
       turnIdx++;
     } else if (t.role === "tool_response") {
-      const ids = pendingCallIds ?? t.responses.map((_, i) => `toolu_orphan_${turnIdx}_${i}`);
+      if (!pendingCallIds || pendingCallIds.length === 0) {
+        // Orphan tool_response — drop. Logging here would require a
+        // structured logger import; keep silent and let smoke tests catch
+        // any pattern of recurring drops.
+        continue;
+      }
+      // If the count mismatches, prefer pairing what we can and synthesize
+      // errors for any leftover. This is rare but defensive.
+      const pairCount = Math.min(pendingCallIds.length, t.responses.length);
+      const ids = pendingCallIds;
       out.push({
         role: "user",
-        content: t.responses.map((r, i) => ({
+        content: t.responses.slice(0, pairCount).map((r, i) => ({
           type: "tool_result" as const,
-          tool_use_id: ids[i] ?? `toolu_orphan_${turnIdx}_${i}`,
+          tool_use_id: ids[i] as string,
           content:
             typeof r.response === "string"
               ? r.response
               : JSON.stringify(r.response),
         })),
       });
+      // If there were more pending tool_use ids than responses, synthesize
+      // error results for the leftover so the assistant message stays
+      // fully paired.
+      if (pendingCallIds.length > t.responses.length) {
+        const leftover = pendingCallIds.slice(t.responses.length);
+        out.push({
+          role: "user",
+          content: leftover.map((id) => ({
+            type: "tool_result" as const,
+            tool_use_id: id,
+            content:
+              "[[tool call response missing in session — proceed without this result]]",
+            is_error: true,
+          })),
+        });
+      }
       pendingCallIds = null;
     }
   }
+  flushDanglingToolUse();
   out.push({ role: "user", content: currentUserMessage });
   return out;
 }
