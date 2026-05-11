@@ -152,30 +152,47 @@ export async function composeApprovalMessage(
     return `${greeting} — ${fallback.replace(/^Listo[^—]*— /, "")}`;
   }
 
+  // Match by ciudad ONLY — same filter the agent's read_pending_ots tool
+  // uses, so the proactive message can't contradict what the agent says
+  // a turn later when the worker asks "what's available?". Skill match
+  // is reported per-OT as a small disclaimer ("no es exactamente tu
+  // especialidad") rather than used as a filter that hides jobs.
+  //
+  // Earlier version filtered out skill-mismatched OTs entirely, which led
+  // to the proactive message saying "no tengo trabajos en Valledupar para
+  // tu especialidad" followed seconds later by the agent volunteering
+  // "Hay uno: limpieza de fachada" — same OT, same ciudad, contradictory
+  // claim. Now both paths show the same set.
   const ciudadNorm = normalize(profile.ciudad);
   const matches = candidateOts
     .filter((o) => {
       if (!o.ciudad) return false;
-      if (!normalize(o.ciudad).includes(ciudadNorm)) return false;
-      return skillMatches(o.especialidad, profile.skills);
+      return normalize(o.ciudad).includes(ciudadNorm);
     })
     .slice(0, MAX_OTS_IN_MESSAGE);
 
   if (matches.length === 0) {
-    return `${greeting} — tu perfil quedó aprobado. Por ahora no tengo trabajos abiertos en ${profile.ciudad} para tu especialidad, pero apenas entre algo te aviso.`;
+    return `${greeting} — tu perfil quedó aprobado. Por ahora no tengo trabajos abiertos en ${profile.ciudad}, pero apenas entre algo te aviso.`;
   }
 
+  const declaredSkills = profile.skills.length > 0;
   const lines = matches.map((o) => {
     const desc = truncate(
       otDescripcion(o.data) || "(sin descripción)",
       MAX_DESC_LEN
     );
     const valor = otValorEstimado(o.data);
-    return valor.label ? `• ${desc} — ${valor.label}` : `• ${desc}`;
+    const skillNote =
+      declaredSkills && !skillMatches(o.especialidad, profile.skills)
+        ? " — ojo, no es exactamente tu especialidad"
+        : "";
+    return valor.label
+      ? `• ${desc} — ${valor.label}${skillNote}`
+      : `• ${desc}${skillNote}`;
   });
 
   return [
-    `${greeting} — tu perfil quedó aprobado. Mira lo que tengo abierto en ${profile.ciudad} que cuadra con lo que haces:`,
+    `${greeting} — tu perfil quedó aprobado. Mira lo que tengo abierto en ${profile.ciudad}:`,
     "",
     ...lines,
     "",
