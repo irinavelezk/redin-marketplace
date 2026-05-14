@@ -63,7 +63,11 @@ export type DocumentoTipo =
   | "ss"
   | "altura"
   | "antecedentes"
-  | "otro";
+  | "otro"
+  // Story 17: optional dossier document types
+  | "cert_estudios"
+  | "cert_trabajos_previos"
+  | "evidencia_arl";
 export type EventoType =
   | "tecnico_registered"
   | "postulacion_created"
@@ -94,6 +98,8 @@ export type EventoType =
   | "llm_call"
   | "llm_error"
   | "llm_retry"
+  // Story 18: customer contact sent a message with no pending rating
+  | "customer_contact_intent_attempt"
   | string; // open-ended
 
 // ---------- Table row types ----------
