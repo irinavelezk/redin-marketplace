@@ -1,5 +1,9 @@
 // HR shortlist view for a single OT — one-click preseleccionar / rechazar.
 // Server actions write to `postulaciones` and log `shortlist_decided` events.
+//
+// v1.1 additions (Stream D):
+//   - Toño recommendation card at the top (via Suspense skeleton fallback).
+//   - decide() computes and persists agreed_with_tono when HR picks a candidate.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
@@ -9,8 +13,101 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import type { ContratoStatus, PostulacionState } from "@redin/shared";
 import Link from "next/link";
+import { Suspense } from "react";
+import { makeDefaultToolContext } from "@redin/tools";
+import { recommendShortlistCandidate } from "@redin/tools/recommend-shortlist-candidate";
 
 export const dynamic = "force-dynamic";
+
+// ---- Confidence label ----
+function confidenceLabel(conf: number): string {
+  if (conf >= 0.75) return "alto";
+  if (conf >= 0.5) return "medio";
+  return "bajo";
+}
+
+// ---- Rec card data loader (runs as server component, inside Suspense) ----
+
+async function loadOrGenerateRec(otId: string): Promise<{
+  recommended_postulacion_id: string;
+  confidence: number;
+  reasoning: string;
+  cached: boolean;
+} | null> {
+  const supa = serviceClient();
+
+  // Check for existing rec and current pool hash
+  const { data: posts } = await supa
+    .from("postulaciones")
+    .select("id")
+    .eq("ot_id", otId)
+    .eq("state", "postulado");
+
+  if (!posts || posts.length === 0) return null;
+
+  // If only one candidate, skip the LLM — trivially pick the only one
+  // (but still call so we cache the rec and compute pool_hash).
+  const ctx = makeDefaultToolContext({ supabase: supa });
+  const result = await recommendShortlistCandidate(ctx, { ot_id: otId });
+  if (!result.ok) {
+    console.warn("rec generation failed", { ot_id: otId, error: result.error });
+    return null;
+  }
+  return result.data;
+}
+
+interface RecCardProps {
+  otId: string;
+  nombreByTec: Map<string, string | null>;
+  postulacionTecnicoMap: Map<string, string>;
+}
+
+async function RecCardInner({ otId, nombreByTec, postulacionTecnicoMap }: RecCardProps) {
+  const rec = await loadOrGenerateRec(otId);
+  if (!rec) return null;
+
+  const tecnicoId = postulacionTecnicoMap.get(rec.recommended_postulacion_id);
+  const nombre = tecnicoId ? (nombreByTec.get(tecnicoId) ?? null) : null;
+  const display = nombre ?? rec.recommended_postulacion_id.slice(0, 8);
+  const confLabel = confidenceLabel(rec.confidence);
+  const confColorClass =
+    rec.confidence >= 0.75
+      ? "text-emerald-700"
+      : rec.confidence >= 0.5
+        ? "text-amber-700"
+        : "text-slate-500";
+
+  return (
+    <div className="card p-4 border-l-4 border-amber-400 bg-amber-50">
+      <div className="text-xs uppercase tracking-wide text-amber-700 mb-1">
+        Sugerencia de Toño {rec.cached ? "(en caché)" : ""}
+      </div>
+      <div className="text-sm text-slate-800">
+        <span className="font-medium">{display}</span>
+        {" · "}
+        <span className={`font-medium ${confColorClass}`}>confianza {confLabel}</span>
+        {" · "}
+        <span className="text-slate-600 italic">{rec.reasoning}</span>
+      </div>
+      <div className="text-[11px] text-slate-400 mt-1 font-mono">
+        postulacion: {rec.recommended_postulacion_id.slice(0, 8)}
+      </div>
+    </div>
+  );
+}
+
+function RecCardSkeleton() {
+  return (
+    <div className="card p-4 border-l-4 border-amber-200 bg-amber-50 animate-pulse">
+      <div className="text-xs uppercase tracking-wide text-amber-400 mb-1">
+        Cargando sugerencia de Toño…
+      </div>
+      <div className="h-4 bg-amber-100 rounded w-3/4" />
+    </div>
+  );
+}
+
+// ---- Server actions ----
 
 async function decide(formData: FormData) {
   "use server";
@@ -23,7 +120,11 @@ async function decide(formData: FormData) {
   const postulacionId = formData.get("postulacion_id");
   const nextState = formData.get("state");
   const otId = formData.get("ot_id");
-  if (typeof postulacionId !== "string" || typeof nextState !== "string" || typeof otId !== "string") {
+  if (
+    typeof postulacionId !== "string" ||
+    typeof nextState !== "string" ||
+    typeof otId !== "string"
+  ) {
     return;
   }
   const state = nextState as PostulacionState;
@@ -46,6 +147,33 @@ async function decide(formData: FormData) {
   if (error) {
     console.error("decide failed", error);
     return;
+  }
+
+  // Compute agreed_with_tono if HR is picking a candidate (preseleccionado)
+  // by comparing with the Toño rec for this OT.
+  if (state === "preseleccionado") {
+    const { data: recRow } = await supa
+      .from("candidate_decisions")
+      .select("id, tono_recommendation_postulacion_id")
+      .eq("ot_id", otId)
+      .eq("scope", "shortlist" as "shortlist")
+      .maybeSingle();
+
+    if (recRow) {
+      const agreedWithTono =
+        recRow.tono_recommendation_postulacion_id === postulacionId;
+
+      // Update the shortlist decision row with HR's pick + agreement
+      await supa
+        .from("candidate_decisions")
+        .update({
+          hr_postulacion_id: postulacionId,
+          agreed_with_tono: agreedWithTono,
+          decided_by: `hr:${hrEmail}`,
+          decided_at: nowIso,
+        })
+        .eq("id", recRow.id);
+    }
   }
 
   await supa.from("eventos").insert({
@@ -185,9 +313,6 @@ export default async function HrShortlistPage({ params }: Props) {
     openPosByTec.set(r.tecnico_id, (openPosByTec.get(r.tecnico_id) ?? 0) + 1);
   }
 
-  // Migration 010: bulk-load nombre per applicant so the shortlist shows real
-  // names instead of `tecnico_id.slice(0, 8)`. Falls back to the prefix when
-  // the column is null on legacy rows.
   const { data: tecRows } = tecnicoIds.length
     ? await supa
         .from("tecnicos_extended")
@@ -199,9 +324,6 @@ export default async function HrShortlistPage({ params }: Props) {
     nombreByTec.set(r.tecnico_id, r.nombre ?? null);
   }
 
-  // Worker ciudad lives in eventos.meta.ciudad (tecnico_registered) — not on
-  // tecnicos_extended. Bulk-load so HR can spot worker-vs-OT city mismatches
-  // (the OT's ciudad is in the page header above each card).
   const { data: ciudadEvents } = tecnicoIds.length
     ? await supa
         .from("eventos")
@@ -218,15 +340,6 @@ export default async function HrShortlistPage({ params }: Props) {
     ciudadByTec.set(e.entity_id, c);
   }
 
-  // Active contract for this OT — if one exists (any non-cancelado status),
-  // every per-worker write button is disabled. The OT is functionally
-  // locked: at most one active contract per OT, by design. Future actions
-  // for the contracted worker (subir firmado, cancelar) live on the
-  // contract page, not here.
-  //
-  // The contratos table has no created_at column today; we order by sent_at
-  // desc nulls first so an in-flight borrador wins over an older
-  // sent/firmado on the rare double-contract edge case.
   const { data: contractsForOt } = await supa
     .from("contratos")
     .select("id, tecnico_id, status, sent_at, signed_at")
@@ -250,6 +363,14 @@ export default async function HrShortlistPage({ params }: Props) {
     rateByTecnico: new Map(),
   });
 
+  // Build postulacion → tecnico_id map for the rec card
+  const postulacionTecnicoMap = new Map<string, string>();
+  for (const p of posts ?? []) {
+    postulacionTecnicoMap.set(p.id, p.tecnico_id);
+  }
+
+  const hasPostulados = (posts ?? []).some((p) => p.state === "postulado");
+
   return (
     <div className="space-y-4">
       <Link href="/hr/pipeline" className="text-sm text-slate-500 hover:text-slate-700">
@@ -265,6 +386,17 @@ export default async function HrShortlistPage({ params }: Props) {
           {otId.slice(0, 8)}
         </div>
       </div>
+
+      {/* Toño recommendation card — non-blocking via Suspense */}
+      {hasPostulados && (
+        <Suspense fallback={<RecCardSkeleton />}>
+          <RecCardInner
+            otId={otId}
+            nombreByTec={nombreByTec}
+            postulacionTecnicoMap={postulacionTecnicoMap}
+          />
+        </Suspense>
+      )}
 
       {activeContract && (
         <div className="card p-4 border-l-4 border-blue-500 bg-blue-50">
