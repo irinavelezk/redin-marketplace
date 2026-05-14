@@ -650,7 +650,7 @@ export interface TurnRow {
   session_id: string;
   turn_number: number;
   phone: string;
-  channel: "whatsapp" | "dashboard";
+  channel: "whatsapp" | "dashboard" | "manos";
   tecnico_id: string | null;
   candidate_state_at_turn: CandidateState | null;
 

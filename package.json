@@ -7,6 +7,7 @@
     "shared",
     "tools",
     "tono",
+    "manos",
     "sync",
     "dashboard"
   ],
@@ -14,6 +15,8 @@
     "dev": "concurrently -n tono,sync,dashboard -c green,yellow,cyan \"npm --workspace @redin/tono run dev\" \"npm --workspace @redin/sync run dev\" \"npm --workspace @redin/dashboard run dev\"",
     "tono:dev": "npm --workspace @redin/tono run dev",
     "tono:pair": "npm --workspace @redin/tono run pair",
+    "manos:dev": "npm --workspace @redin/manos run dev",
+    "manos:pair": "npm --workspace @redin/manos run pair",
     "sync:dev": "npm --workspace @redin/sync run dev",
     "sync:once": "npm --workspace @redin/sync run once",
     "dashboard:dev": "npm --workspace @redin/dashboard run dev",
