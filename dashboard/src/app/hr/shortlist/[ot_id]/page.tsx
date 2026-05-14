@@ -7,7 +7,7 @@ import { enqueueWhatsApp, tecnicoNotificationContext } from "@/lib/notify";
 import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import type { ContratoStatus, PostulacionState } from "@redin/shared";
+import type { ContratoStatus, PostulacionState, WorkerProfile, OtAlcance } from "@redin/shared";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
@@ -199,9 +199,9 @@ export default async function HrShortlistPage({ params }: Props) {
     nombreByTec.set(r.tecnico_id, r.nombre ?? null);
   }
 
-  // Worker ciudad lives in eventos.meta.ciudad (tecnico_registered) — not on
-  // tecnicos_extended. Bulk-load so HR can spot worker-vs-OT city mismatches
-  // (the OT's ciudad is in the page header above each card).
+  // Worker ciudad + especialidades live in eventos.meta (tecnico_registered).
+  // Bulk-load so HR can spot worker-vs-OT city mismatches and so the new
+  // especialidadFit + proximidad ranking signals work on the shortlist view.
   const { data: ciudadEvents } = tecnicoIds.length
     ? await supa
         .from("eventos")
@@ -211,11 +211,18 @@ export default async function HrShortlistPage({ params }: Props) {
         .order("created_at", { ascending: false })
     : { data: [] };
   const ciudadByTec = new Map<string, string | null>();
+  const workerProfiles = new Map<string, WorkerProfile>();
   for (const e of ciudadEvents ?? []) {
     if (!e.entity_id || ciudadByTec.has(e.entity_id)) continue;
     const meta = e.meta as Record<string, unknown> | null;
-    const c = meta && typeof meta.ciudad === "string" ? meta.ciudad : null;
-    ciudadByTec.set(e.entity_id, c);
+    const ciudad = meta && typeof meta.ciudad === "string" ? meta.ciudad : null;
+    ciudadByTec.set(e.entity_id, ciudad);
+    const especialidades = Array.isArray(meta?.especialidades)
+      ? (meta!.especialidades as unknown[]).filter(
+          (x): x is string => typeof x === "string"
+        )
+      : null;
+    workerProfiles.set(e.entity_id, { ciudad, especialidades });
   }
 
   // Active contract for this OT — if one exists (any non-cancelado status),
@@ -243,11 +250,59 @@ export default async function HrShortlistPage({ params }: Props) {
     cancelado: "Cancelado",
   };
 
+  // Build OT-level maps for the ranking signals.
+  const otFieldsMap = new Map([
+    [
+      otId,
+      {
+        ciudad: ot?.ciudad ?? null,
+        especialidad: ot?.especialidad ?? null,
+      },
+    ],
+  ]);
+  // otAlcance LEFT JOIN — graceful degrade when ots_extended doesn't exist yet.
+  // Cast through unknown: ots_extended is not in the hand-authored Database
+  // schema yet (Stream A migration 012 adds it in parallel).
+  let otAlcanceMap: Map<string, OtAlcance | null> = new Map([[otId, null]]);
+  try {
+    const { data: extRow } = await (supa as unknown as {
+      from: (t: string) => {
+        select: (cols: string) => {
+          eq: (col: string, val: string) => {
+            maybeSingle: () => Promise<{ data: unknown | null; error: unknown }>;
+          };
+        };
+      };
+    })
+      .from("ots_extended")
+      .select("alcance_jsonb")
+      .eq("ot_row_id", otId)
+      .maybeSingle();
+    if (extRow) {
+      const aj = (extRow as { alcance_jsonb: unknown }).alcance_jsonb as Record<string, unknown> | null;
+      otAlcanceMap = new Map([
+        [
+          otId,
+          aj
+            ? {
+                especialidad: typeof aj.especialidad === "string" ? aj.especialidad : null,
+                subcategoria: typeof aj.subcategoria === "string" ? aj.subcategoria : null,
+              }
+            : null,
+        ],
+      ]);
+    }
+  } catch {
+    // ots_extended not yet available — keep null
+  }
+
   const ranked = rankPostulaciones({
     postulaciones: posts ?? [],
     openPosByTecnico: openPosByTec,
     ratingByTecnico: ratingByTec,
-    rateByTecnico: new Map(),
+    workerProfiles,
+    otFields: otFieldsMap,
+    otAlcance: otAlcanceMap,
   });
 
   return (
@@ -345,8 +400,10 @@ export default async function HrShortlistPage({ params }: Props) {
                     {new Date(r.postulacion.applied_at).toLocaleString("es-CO")}
                   </div>
                   <div className="text-xs text-slate-500 mt-1">
-                    dispo {r.scores.disponibilidad.toFixed(2)} · calidad{" "}
-                    {r.scores.calidad?.toFixed(1) ?? "—"}
+                    fit {r.scores.especialidadFit.toFixed(2)} ·{" "}
+                    prox {r.scores.proximidad.toFixed(0)} ·{" "}
+                    dispo {r.scores.disponibilidad.toFixed(2)} ·{" "}
+                    calidad {r.scores.calidad?.toFixed(1) ?? "—"}
                   </div>
                 </div>
                 <div className="flex flex-col gap-1 shrink-0">
