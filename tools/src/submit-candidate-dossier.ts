@@ -181,6 +181,15 @@ function validatePayload(
   // gaps
   const gaps = Array.isArray(raw.gaps) ? raw.gaps.filter((g) => typeof g === "string") : [];
 
+  // Compute missing_optional: which optional doc fields were NOT provided.
+  const missingOptional: string[] = [];
+  if (!raw.cert_estudios_doc_id) missingOptional.push("cert_estudios");
+  if (!raw.cert_trabajos_previos_doc_id) missingOptional.push("cert_trabajos_previos");
+  if (raw.tiene_vehiculo === undefined || raw.tiene_vehiculo === null) {
+    missingOptional.push("vehiculo");
+  }
+  if (!raw.arl_doc_id) missingOptional.push("ARL");
+
   const normalized: CandidateDossier = {
     schema_version: 1,
     cedula: { tipo: raw.cedula.tipo, numero },
@@ -220,6 +229,13 @@ function validatePayload(
     },
     referencias_externas: raw.referencias_externas,
     dossier: dossierText,
+    // Optional doc fields — undefined if not provided
+    cert_estudios_doc_id: raw.cert_estudios_doc_id ?? undefined,
+    cert_trabajos_previos_doc_id: raw.cert_trabajos_previos_doc_id ?? undefined,
+    tiene_vehiculo: raw.tiene_vehiculo ?? undefined,
+    tipo_vehiculo: raw.tipo_vehiculo ?? undefined,
+    arl_doc_id: raw.arl_doc_id ?? undefined,
+    missing_optional: missingOptional,
     tono_recommendation: raw.tono_recommendation,
     tono_confidence: raw.tono_confidence,
     tono_reasoning: reasoning,
