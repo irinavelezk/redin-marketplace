@@ -4,3 +4,4 @@ export * from "./env";
 export * from "./logger";
 export * from "./supabase";
 export * from "./ids";
+export * from "./matching-signals";

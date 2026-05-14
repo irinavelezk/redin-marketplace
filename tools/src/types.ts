@@ -118,6 +118,11 @@ export interface PendingOtSummary {
   // Fecha_Programada from AppSheet, formatted dd/mm/yyyy. Tells the worker
   // when the job actually starts.
   fecha_programada: string | null;
+  // Alcance fields from ots_extended (Stream A migration 012). Present when
+  // the architect has enriched the OT via Manos. Both are null when the table
+  // doesn't exist yet or when the architect hasn't filled in alcance yet.
+  has_alcance?: boolean;
+  alcance_pdf_url?: string | null;
 }
 export interface ReadPendingOtsOutput {
   ots: PendingOtSummary[];
