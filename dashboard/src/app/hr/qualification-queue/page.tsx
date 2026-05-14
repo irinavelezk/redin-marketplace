@@ -53,6 +53,7 @@ interface DossierPayloadShape {
   categorias_principales?: unknown;
   subcategorias?: unknown;
   gaps?: unknown;
+  missing_optional?: unknown;
 }
 
 function summarizeDossierPayload(payload: unknown): {
@@ -60,9 +61,10 @@ function summarizeDossierPayload(payload: unknown): {
   categorias: string[];
   subcategorias: string[];
   gaps: string[];
+  missing_optional: string[];
 } {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return { ciudad_base: null, categorias: [], subcategorias: [], gaps: [] };
+    return { ciudad_base: null, categorias: [], subcategorias: [], gaps: [], missing_optional: [] };
   }
   const p = payload as DossierPayloadShape;
   const ciudad =
@@ -76,7 +78,11 @@ function summarizeDossierPayload(payload: unknown): {
   const gaps = Array.isArray(p.gaps)
     ? (p.gaps as unknown[]).filter((x): x is string => typeof x === "string")
     : [];
-  return { ciudad_base: ciudad, categorias: cats, subcategorias: subs, gaps };
+  // Story 17: missing_optional was added later — may be absent on legacy dossiers.
+  const missingOptional = Array.isArray(p.missing_optional)
+    ? (p.missing_optional as unknown[]).filter((x): x is string => typeof x === "string")
+    : [];
+  return { ciudad_base: ciudad, categorias: cats, subcategorias: subs, gaps, missing_optional: missingOptional };
 }
 
 function fmtTime(iso: string): string {
@@ -157,6 +163,7 @@ export default async function HrQualificationQueuePage() {
       categorias: sum.categorias,
       subcategorias: sum.subcategorias,
       gaps: sum.gaps,
+      missing_optional: sum.missing_optional,
     });
   }
 

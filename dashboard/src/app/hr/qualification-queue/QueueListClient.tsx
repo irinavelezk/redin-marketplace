@@ -38,6 +38,8 @@ export interface QueueDossier {
   categorias: string[];
   subcategorias: string[];
   gaps: string[];
+  /** Story 17: optional doc keys that were NOT provided by the worker. */
+  missing_optional: string[];
 }
 
 export interface QueueNote {
@@ -60,6 +62,23 @@ export interface QueueItem {
 }
 
 const REMOVES_FROM_QUEUE = new Set<HrAction>(["approve", "reject"]);
+
+// Story 17: maps missing_optional key → human-readable badge label.
+const MISSING_OPTIONAL_LABELS: Record<string, string> = {
+  ARL: "Sin ARL",
+  cert_estudios: "Sin cert. estudios",
+  cert_trabajos_previos: "Sin cert. trabajos previos",
+  vehiculo: "Sin vehículo",
+};
+
+function MissingOptionalBadge({ missingKey }: { missingKey: string }): JSX.Element {
+  const label = MISSING_OPTIONAL_LABELS[missingKey] ?? `Sin ${missingKey}`;
+  return (
+    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 border border-slate-200">
+      {label}
+    </span>
+  );
+}
 
 function recommendationBadge(rec: TonoRecommendation): {
   label: string;
@@ -320,6 +339,14 @@ function QueueCard({
                 )}
               </div>
             )}
+
+          {tec.dossier && tec.dossier.missing_optional.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {tec.dossier.missing_optional.map((key) => (
+                <MissingOptionalBadge key={key} missingKey={key} />
+              ))}
+            </div>
+          )}
 
           {tec.notes.length > 0 && (
             <div className="mt-3 space-y-1">
