@@ -31,6 +31,11 @@ export {
   levenshtein,
   findMatches,
 } from "./legacy-name-match";
+export { recommendShortlistCandidate } from "./recommend-shortlist-candidate";
+export type {
+  RecommendShortlistInput,
+  RecommendShortlistOutput,
+} from "./recommend-shortlist-candidate";
 export type { NameMatch, FindMatchesOptions } from "./legacy-name-match";
 export type {
   LegacyEnrichmentData,
