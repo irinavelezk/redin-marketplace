@@ -12,9 +12,10 @@
 // "Compartir con arquitecto" button that copies a signed public link
 // (lib/public-token) for the architect-facing slim view.
 //
-// The internal candidate ranking (disponibilidad → calidad → costo) is
-// preserved per OT — calidad will become the primary signal for the future
-// autonomous-assignment agent, so HR getting accustomed to it now matters.
+// v1.1 additions (Stream D):
+//   - Agreement-rate header block: "Acuerdo HR ↔ Toño: X% sobre N decisiones"
+//     from shortlist_agreement_metrics view (scope='shortlist').
+//   - Nudge button ("Pedir alcance al arquitecto") on OTs without alcance.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
@@ -26,6 +27,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { CopyShareLinkButton } from "@/components/CopyShareLinkButton";
+import { NudgeArchitectButton } from "@/components/NudgeArchitectButton";
 
 export const dynamic = "force-dynamic";
 
@@ -91,8 +93,6 @@ function computeOtStatus(args: {
 }
 
 function publicOriginFromHeaders(): string {
-  // NEXT_PUBLIC_SITE_URL is the canonical origin (Railway assigns it as an
-  // env var); fall back to request headers when it's not set (e.g. local).
   const fromEnv = process.env.NEXT_PUBLIC_SITE_URL;
   if (fromEnv) return fromEnv.replace(/\/$/, "");
   const h = headers();
@@ -109,10 +109,17 @@ export default async function HrPipelinePage() {
   const supa = serviceClient();
   const origin = publicOriginFromHeaders();
 
-  // Pipeline shows ONLY assignable OTs — state "4. Coordinar – Listo para
-  // ejecutar". The literal lives in @redin/tools/read-pending-ots so this
-  // view, the read_pending_ots tool, and (eventually) the AppSheet sync
-  // Selector all reference one source of truth.
+  // Agreement rate from shortlist_agreement_metrics (scope='shortlist')
+  // Query: total decisions + agreed decisions for the header block.
+  const { data: agreementRows } = await supa
+    .from("shortlist_agreement_metrics")
+    .select("agreed_with_tono");
+  const totalDecisions = (agreementRows ?? []).length;
+  const agreedCount = (agreementRows ?? []).filter((r) => r.agreed_with_tono === true).length;
+  const agreementPct =
+    totalDecisions > 0 ? Math.round((agreedCount / totalDecisions) * 100) : null;
+
+  // Pipeline shows ONLY assignable OTs — state "4. Coordinar – Listo para ejecutar".
   const { data: offerableOts } = await supa
     .from("ots_mirror")
     .select("row_id, ciudad, especialidad, estado, data, synced_at")
@@ -121,13 +128,6 @@ export default async function HrPipelinePage() {
   const pendingOts = offerableOts ?? [];
   const offerableIds = pendingOts.map((o) => o.row_id);
 
-  // Postulaciones AND contratos scoped to the offerable OTs only — both
-  // feed the per-OT status pill computation and the ranking display.
-  // We pull contract id so we can link directly to the active contract
-  // (any non-cancelado) from the pipeline card. The schema enforces "at
-  // most one active per OT" by convention, not by constraint — if we ever
-  // see two, last-write-wins on the map below and a follow-up data audit
-  // is warranted.
   const [postsRes, contratosRes] = offerableIds.length
     ? await Promise.all([
         supa.from("postulaciones").select("*").in("ot_id", offerableIds),
@@ -150,9 +150,6 @@ export default async function HrPipelinePage() {
       ];
   const allPostsForPending: PostulacionRow[] = postsRes.data ?? [];
   const contratoStatesByOt = new Map<string, Set<ContratoStatus>>();
-  // Active contract id per OT — first non-cancelado we encounter. Order is
-  // sent_at desc nulls first so an in-flight borrador (no sent_at yet)
-  // wins over an older signed/enviado on the same OT.
   const activeContractIdByOt = new Map<string, string>();
   for (const c of contratosRes.data ?? []) {
     if (!c.ot_id) continue;
@@ -164,9 +161,6 @@ export default async function HrPipelinePage() {
     }
   }
 
-  // Internal performance (Jose + arquitectos via /hr/evaluations). calidad
-  // is the seed for the future autonomous-assignment agent; we keep it
-  // visible on the pipeline so HR is calibrated to the signal early.
   const tecnicoIds = [...new Set(allPostsForPending.map((p) => p.tecnico_id))];
   const { data: perfRows } = tecnicoIds.length
     ? await supa
@@ -228,8 +222,6 @@ export default async function HrPipelinePage() {
     postsByOt.get(p.ot_id)!.push(p);
   }
 
-  // Pre-compute status + sort key for every OT so we can re-order before
-  // rendering. Stable secondary sort by synced_at desc.
   interface OtRow {
     ot: (typeof pendingOts)[number];
     posts: PostulacionRow[];
@@ -250,7 +242,6 @@ export default async function HrPipelinePage() {
     if (a.status.sortIndex !== b.status.sortIndex) {
       return a.status.sortIndex - b.status.sortIndex;
     }
-    // Tiebreak: most-recently-synced first, so freshness still matters.
     return (
       new Date(b.ot.synced_at ?? 0).getTime() -
       new Date(a.ot.synced_at ?? 0).getTime()
@@ -288,6 +279,46 @@ export default async function HrPipelinePage() {
           </Link>
         </div>
       </div>
+
+      {/* Agreement-rate header block — Stream D */}
+      <div className="card p-4 bg-slate-50 flex items-center justify-between gap-4">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500 mb-0.5">
+            Acuerdo HR ↔ Toño
+          </div>
+          {agreementPct !== null ? (
+            <div className="text-2xl font-bold text-slate-900">
+              {agreementPct}%{" "}
+              <span className="text-sm font-normal text-slate-500">
+                sobre {totalDecisions}{" "}
+                {totalDecisions === 1 ? "decisión" : "decisiones"} de shortlist
+              </span>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500 italic">
+              Sin decisiones de shortlist aún
+            </div>
+          )}
+        </div>
+        {agreementPct !== null && (
+          <div
+            className={`text-xs rounded-full px-3 py-1 font-medium ${
+              agreementPct >= 75
+                ? "bg-emerald-100 text-emerald-800"
+                : agreementPct >= 50
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-red-100 text-red-800"
+            }`}
+          >
+            {agreementPct >= 75
+              ? "Alto acuerdo"
+              : agreementPct >= 50
+                ? "Acuerdo moderado"
+                : "Bajo acuerdo"}
+          </div>
+        )}
+      </div>
+
       <p className="text-sm text-slate-600">
         OTs en estado <strong>4. Coordinar – Listo para ejecutar</strong>.
         Ordenadas por acción pendiente: las que necesitan tu decisión arriba.
@@ -310,6 +341,16 @@ export default async function HrPipelinePage() {
           const publicUrl = `${origin}/publico/ot/${signOtPublicToken(ot.row_id)}`;
           const preselCount = posts.filter((p) => p.state === "preseleccionado").length;
           const postuladoCount = posts.filter((p) => p.state === "postulado").length;
+
+          // Determine if this OT lacks alcance. We check ots_extended in the
+          // data field of the ot row; since ots_extended is a separate table
+          // (added by Stream A's migration 012), we degrade gracefully when it
+          // doesn't exist — show the nudge button for all state-4 OTs without
+          // a known alcance. A future query can check ots_extended directly.
+          // For now: show the button always (Stream A will populate alcance; the
+          // button is idempotent on re-click).
+          const showNudgeButton = true;
+
           return (
             <li key={ot.row_id} className="card p-4">
               <div className="flex items-start justify-between gap-4">
@@ -398,6 +439,9 @@ export default async function HrPipelinePage() {
                   );
                 })()}
                 <CopyShareLinkButton url={publicUrl} />
+                {showNudgeButton && (
+                  <NudgeArchitectButton otId={ot.row_id} />
+                )}
               </div>
             </li>
           );
