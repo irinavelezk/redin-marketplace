@@ -2,15 +2,17 @@
 //
 // Flow:
 //   1. If session.meta.arq_row_id already set → pass through (gate already open).
-//   2. Check the current message + recent history for a cédula pattern (6–12 digits).
-//   3. If cédula found → ilike-match against arquitectos_mirror.data->>'Cedula'.
+//   2. Extract a cédula candidate from the current message — accepts any common
+//      Colombian format (digits only, dotted "1.098.665.432", spaced, comma-separated).
+//   3. Normalize candidate and stored cédula to digits-only, compare.
 //      - Match: set session.meta.arq_row_id, persist meta, log manos_cedula_verified,
 //               return "perfecto, listo <nombre>".
 //      - No match: log manos_cedula_rejected, escalate to Telegram, return polite refusal.
 //   4. No cédula in messages yet → return onboarding prompt.
 //
-// Identity is in the tool input layer too (arq_row_id validation) — this gate
-// is the first line of defense at the session boundary.
+// AppSheet `Arquitecto` schema (verified live 2026-05-14):
+//   Row ID, Arquitecto (display name), Cedula, Email, Telefono, Related Ordenes_Trabajos.
+//   Cedula is typed as text — may arrive digits-only or with thousand separators.
 
 import { createLogger } from "@redin/shared";
 import type { ServerClient } from "@redin/shared";
@@ -18,9 +20,33 @@ import type { TelegramEscalationSink } from "./telegram-escalation";
 
 const log = createLogger("manos:cedula-gate");
 
-// Cédula pattern: 6–12 consecutive digits (Colombian cédulas are 6–10 digits;
-// we allow up to 12 for edge cases and NIT-like codes).
-const CEDULA_RE = /\b(\d{6,12})\b/;
+/** Strip every non-digit character. */
+function digitsOnly(s: string): string {
+  return s.replace(/\D/g, "");
+}
+
+/**
+ * Extract a cédula candidate from free-text. Accepts:
+ *   - 1098665432
+ *   - 1.098.665.432
+ *   - 1,098,665,432
+ *   - 1 098 665 432
+ *   - "mi cédula es 1.098.665.432, gracias"
+ *
+ * Strategy: iterate every sequence of digit-or-separator characters, normalize
+ * to digits-only, return the first one whose length lands in the cédula range.
+ */
+function extractCedula(text: string): string | null {
+  const re = /\d[\d.,\s]*\d|\d/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const digits = digitsOnly(m[0]);
+    if (digits.length >= 6 && digits.length <= 12) {
+      return digits;
+    }
+  }
+  return null;
+}
 
 export interface CedulaGateResult {
   /** true = gate is open, LLM should proceed. */
@@ -33,7 +59,6 @@ export interface CedulaGateContext {
   supabase: ServerClient;
   phone: string;
   currentText: string;
-  // Session meta is read/written directly so the gate can persist arq_row_id.
   sessionId: string;
   sessionMeta: Record<string, unknown>;
   escalationSink?: TelegramEscalationSink;
@@ -48,14 +73,15 @@ export async function runCedulaGate(
   ctx: CedulaGateContext
 ): Promise<CedulaGateResult> {
   // Gate already open — architect verified in this session.
-  if (typeof ctx.sessionMeta.arq_row_id === "string" && ctx.sessionMeta.arq_row_id.trim()) {
+  if (
+    typeof ctx.sessionMeta.arq_row_id === "string" &&
+    ctx.sessionMeta.arq_row_id.trim()
+  ) {
     return { passed: true };
   }
 
-  // Look for a cédula in the current message.
-  const match = CEDULA_RE.exec(ctx.currentText);
-  if (!match) {
-    // No cédula yet — send onboarding prompt.
+  const cedulaDigits = extractCedula(ctx.currentText);
+  if (!cedulaDigits) {
     return {
       passed: false,
       reply:
@@ -63,15 +89,19 @@ export async function runCedulaGate(
     };
   }
 
-  const cedula = match[1]!;
-  log.info("cédula candidate", { phone: ctx.phone, cedula: cedula.slice(0, 4) + "****" });
+  log.info("cédula candidate", {
+    phone: ctx.phone,
+    cedula_prefix: cedulaDigits.slice(0, 4) + "****",
+    cedula_len: cedulaDigits.length,
+  });
 
-  // Query arquitectos_mirror for this cédula (case-insensitive).
+  // Pull all architect rows (small set, ~10) and compare digit-normalized cédulas.
+  // Done in-memory instead of SQL because the stored cédula can have arbitrary
+  // separator chars (dots/commas/spaces) and a generic regexp_replace in SQL would
+  // complicate the query without speed benefit at this row count.
   const { data: rows, error } = await ctx.supabase
     .from("arquitectos_mirror")
-    .select("row_id, data")
-    .filter("data->>Cedula", "ilike", cedula)
-    .limit(5);
+    .select("row_id, data");
 
   if (error) {
     log.error("cedula lookup failed", { error: error.message, phone: ctx.phone });
@@ -81,26 +111,30 @@ export async function runCedulaGate(
     };
   }
 
-  // Accept first exact match (case-insensitive).
   const matched = (rows ?? []).find((r) => {
     const d = r.data as Record<string, unknown>;
-    return String(d["Cedula"] ?? "").toLowerCase() === cedula.toLowerCase();
+    const stored = String(d["Cedula"] ?? "");
+    if (!stored) return false;
+    return digitsOnly(stored) === cedulaDigits;
   });
 
   if (!matched) {
-    // Log rejection and escalate.
     await ctx.supabase.from("eventos").insert({
       type: "manos_cedula_rejected",
       entity_id: null,
       actor: `arquitecto:${ctx.phone}`,
-      meta: { cedula_prefix: cedula.slice(0, 4), phone: ctx.phone },
+      meta: {
+        cedula_prefix: cedulaDigits.slice(0, 4),
+        cedula_len: cedulaDigits.length,
+        phone: ctx.phone,
+      },
     });
 
     await ctx.escalationSink?.send(
-      `Manos: cédula no encontrada en arquitectos_mirror — phone=${ctx.phone} cedula=${cedula.slice(0, 4)}****`
+      `Manos: cédula no encontrada en arquitectos_mirror — phone=${ctx.phone} cedula=${cedulaDigits.slice(0, 4)}****`
     );
 
-    log.warn("cedula not found", { phone: ctx.phone });
+    log.warn("cedula not found", { phone: ctx.phone, cedula_len: cedulaDigits.length });
     return {
       passed: false,
       reply:
@@ -108,16 +142,13 @@ export async function runCedulaGate(
     };
   }
 
-  // Successful verification — pull display name.
+  // Successful verification — resolve display name.
+  // AppSheet column is `Arquitecto`. Fallbacks for legacy/manual data.
   const data = matched.data as Record<string, unknown>;
   const nombre =
-    typeof data["Nombre"] === "string" && data["Nombre"].trim()
-      ? data["Nombre"].trim()
-      : typeof data["Nombre de Arquitecto"] === "string" && data["Nombre de Arquitecto"].trim()
-        ? (data["Nombre de Arquitecto"] as string).trim()
-        : "arquitecto";
+    pickString(data, ["Arquitecto", "Nombre", "Nombre de Arquitecto", "Name"]) ??
+    "arquitecto";
 
-  // Persist arq_row_id to session meta.
   ctx.sessionMeta.arq_row_id = matched.row_id;
   await ctx.supabase
     .from("sessions")
@@ -125,7 +156,6 @@ export async function runCedulaGate(
     .update({ meta: ctx.sessionMeta as any })
     .eq("id", ctx.sessionId);
 
-  // Log event.
   await ctx.supabase.from("eventos").insert({
     type: "manos_cedula_verified",
     entity_id: matched.row_id,
@@ -133,10 +163,22 @@ export async function runCedulaGate(
     meta: { arq_row_id: matched.row_id, nombre, phone: ctx.phone },
   });
 
-  log.info("cedula verified", { phone: ctx.phone, arq_row_id: matched.row_id });
+  log.info("cedula verified", {
+    phone: ctx.phone,
+    arq_row_id: matched.row_id,
+    nombre,
+  });
 
   return {
     passed: true,
     reply: `Perfecto, ¡listo ${nombre}! ¿Con qué OT empezamos?`,
   };
+}
+
+function pickString(d: Record<string, unknown>, keys: string[]): string | null {
+  for (const k of keys) {
+    const v = d[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return null;
 }

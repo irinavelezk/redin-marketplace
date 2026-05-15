@@ -85,10 +85,17 @@ export async function finalizeAlcance(
     .eq("row_id", arqRowId)
     .maybeSingle();
   const arqData = arqRow?.data as Record<string, unknown> | null;
+  // AppSheet `Arquitecto` table — display-name column is "Arquitecto". Older
+  // assumed keys kept as fallbacks for safety.
   const arqNombre =
-    (typeof arqData?.["Nombre"] === "string" ? arqData["Nombre"] : null) ??
+    (typeof arqData?.["Arquitecto"] === "string" && arqData["Arquitecto"].trim()
+      ? (arqData["Arquitecto"] as string).trim()
+      : null) ??
+    (typeof arqData?.["Nombre"] === "string" && arqData["Nombre"].trim()
+      ? (arqData["Nombre"] as string).trim()
+      : null) ??
     (typeof arqData?.["Nombre de Arquitecto"] === "string"
-      ? (arqData["Nombre de Arquitecto"] as string)
+      ? (arqData["Nombre de Arquitecto"] as string).trim()
       : null) ??
     "Arquitecto";
 
