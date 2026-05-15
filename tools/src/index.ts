@@ -32,6 +32,24 @@ export {
   findMatches,
 } from "./legacy-name-match";
 export type { NameMatch, FindMatchesOptions } from "./legacy-name-match";
+
+// Manos tools (architect-facing) — separate tool set, not in TOOL_DECLARATIONS.
+export { listMyPendingOts } from "./manos/list-my-pending-ots";
+export type {
+  ListMyPendingOtsInput,
+  ListMyPendingOtsOutput,
+  PendingOtItem,
+} from "./manos/list-my-pending-ots";
+export { attachPhotos, verifyOtOwnership } from "./manos/attach-photos";
+export type { AttachPhotosInput, AttachPhotosOutput } from "./manos/attach-photos";
+export { setAlcanceOt } from "./manos/set-alcance-ot";
+export type {
+  SetAlcanceOtInput,
+  SetAlcanceOtOutput,
+  AlcanceShape,
+} from "./manos/set-alcance-ot";
+export { finalizeAlcance } from "./manos/finalize-alcance";
+export type { FinalizeAlcanceInput, FinalizeAlcanceOutput } from "./manos/finalize-alcance";
 export type {
   LegacyEnrichmentData,
   CompleteLegacyProfileInput,

@@ -46,7 +46,7 @@ export type QualificationCallOutcome =
   | "rejected"
   | "needs_more_info"
   | "no_show";
-export type SessionChannel = "whatsapp" | "dashboard";
+export type SessionChannel = "whatsapp" | "dashboard" | "manos";
 export type MessageRole = "user" | "assistant" | "tool";
 export type PostulacionState =
   | "postulado"
@@ -235,6 +235,8 @@ export type SessionRow = {
   channel: SessionChannel;
   started_at: string;
   last_active: string;
+  // Migration 012: per-session metadata blob (Manos uses it to persist arq_row_id).
+  meta: Json | null;
 };
 
 export type MessageRow = {
@@ -342,6 +344,23 @@ export type OTMirrorRow = MirrorRowBase & {
   ciudad: string | null;
   especialidad: string | null;
   estado: string | null;
+};
+
+// Migration 012: Manos write-side extension to ots_mirror.
+// Holds architect-submitted alcance (scope) + photo paths + AppSheet writeback state.
+export type OtsExtendedRow = {
+  ot_row_id: string;
+  alcance_jsonb: Json | null;
+  alcance_pdf_path: string | null;
+  photo_paths: string[];
+  last_architect_arq_row_id: string | null;
+  last_architect_phone: string | null;
+  created_at: string;
+  updated_at: string;
+  // AppSheet writeback outbox — mirrors tecnicos_extended pattern.
+  appsheet_alcance_pending: boolean;
+  appsheet_alcance_sync_attempts: number;
+  appsheet_alcance_last_error: string | null;
 };
 
 export type ContactoMirrorRow = MirrorRowBase & {
@@ -480,6 +499,7 @@ export interface Database {
             id?: string;
             started_at?: string;
             last_active?: string;
+            meta?: Json | null;
           }
         >,
         Partial<SessionRow>
@@ -582,6 +602,24 @@ export interface Database {
         OTMirrorRow,
         Omit<OTMirrorRow, "synced_at"> & { synced_at?: string },
         Partial<OTMirrorRow>
+      >;
+      ots_extended: Table<
+        OtsExtendedRow,
+        OptionalNulls<
+          Omit<
+            OtsExtendedRow,
+            | "created_at"
+            | "updated_at"
+            | "appsheet_alcance_pending"
+            | "appsheet_alcance_sync_attempts"
+          > & {
+            created_at?: string;
+            updated_at?: string;
+            appsheet_alcance_pending?: boolean;
+            appsheet_alcance_sync_attempts?: number;
+          }
+        >,
+        Partial<OtsExtendedRow>
       >;
       clientes_mirror: Table<
         ClienteMirrorRow,

@@ -1,0 +1,36 @@
+{
+  "name": "@redin/manos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/runner.ts",
+  "exports": {
+    ".": "./src/runner.ts"
+  },
+  "scripts": {
+    "dev": "tsx --env-file=../.env.local --watch src/runner.ts",
+    "start": "tsx --env-file=../.env.local src/runner.ts",
+    "pair": "tsx --env-file=../.env.local src/pair.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.41.0",
+    "groq-sdk": "^1.2.0",
+    "@hapi/boom": "^10.0.1",
+    "@react-pdf/renderer": "^4.3.0",
+    "@redin/shared": "*",
+    "@redin/tools": "*",
+    "@whiskeysockets/baileys": "^6.7.21",
+    "dotenv": "^16.5.0",
+    "pino": "^9.11.0",
+    "qrcode-terminal": "^0.12.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "@types/react": "^18.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

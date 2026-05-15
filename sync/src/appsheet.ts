@@ -371,6 +371,91 @@ export class AppSheetReadClient {
     }
     return { edited: true, alreadyGone: false };
   }
+
+  /**
+   * Edit an Ordenes_Trabajo row in AppSheet, identified by Row ID.
+   *
+   * Safety belt: pre-flights a Find by Row ID and verifies that the
+   * AppSheet row's ID_Orden (or Numero_Orden) matches `expectedIdOrden`
+   * before writing. On mismatch, throws — callers should treat this as
+   * "manual reconciliation needed" and leave the Supabase outbox pending.
+   *
+   * Special case: if AppSheet returns an error body containing "column"
+   * and "not found" (case-insensitive), this function returns
+   * {edited: false, columnMissing: true} so the projector can leave
+   * appsheet_alcance_pending=true without crashing.
+   * (Estado_Redin precedent — same pattern as editTecnico revoke path.)
+   *
+   * `fields` carries OT columns to set (e.g., {Alcance_OT: "..."}).
+   * The Row ID key is added automatically.
+   */
+  async editOT(
+    rowId: string,
+    expectedIdOrden: string,
+    fields: Record<string, string>
+  ): Promise<{ edited: boolean; alreadyGone: boolean; columnMissing: boolean }> {
+    if (!rowId) throw new Error("editOT: rowId required");
+    if (!expectedIdOrden) {
+      throw new Error("editOT: expectedIdOrden required for safety");
+    }
+    if (Object.keys(fields).length === 0) {
+      throw new Error("editOT: at least one field required");
+    }
+
+    const escapedId = rowId.replace(/"/g, '\\"');
+    const matching = await this.find<AppSheetOT>("Ordenes_Trabajo", {
+      selector: `Filter(Ordenes_Trabajo, [Row ID] = "${escapedId}")`,
+    });
+
+    if (matching.length === 0) {
+      return { edited: true, alreadyGone: true, columnMissing: false };
+    }
+    if (matching.length > 1) {
+      throw new Error(
+        `AppSheet OT integrity: ${matching.length} rows match Row ID ${rowId}; refusing to edit`
+      );
+    }
+    const actualIdOrden = matching[0]?.["ID_Orden"] ?? matching[0]?.["Numero_Orden"];
+    if (actualIdOrden !== expectedIdOrden) {
+      throw new Error(
+        `AppSheet OT integrity: row ${rowId} has ID_Orden "${actualIdOrden ?? "(empty)"}", ` +
+          `expected "${expectedIdOrden}". Refusing to edit (manual reconciliation required).`
+      );
+    }
+
+    const res = await fetch(this.url("Ordenes_Trabajo"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ApplicationAccessKey: this.accessKey,
+      },
+      body: JSON.stringify({
+        Action: "Edit",
+        Properties: { Locale: "en-US" },
+        Rows: [{ "Row ID": rowId, ...fields }],
+      }),
+    });
+
+    if (res.status === 404) return { edited: true, alreadyGone: true, columnMissing: false };
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      // Detect AppSheet "column not found" error — no crash, leave outbox pending.
+      const isColumnMissing =
+        body.toLowerCase().includes("column") &&
+        (body.toLowerCase().includes("not found") ||
+          body.toLowerCase().includes("doesn't exist") ||
+          body.toLowerCase().includes("does not exist") ||
+          body.toLowerCase().includes("unknown"));
+      if (isColumnMissing) {
+        return { edited: false, alreadyGone: false, columnMissing: true };
+      }
+      throw new Error(
+        `AppSheet Ordenes_Trabajo Edit failed: ${res.status} ${body.substring(0, 200)}`
+      );
+    }
+    return { edited: true, alreadyGone: false, columnMissing: false };
+  }
 }
 
 // AppSheet TECNICOS row shape — the verified column schema (live API

@@ -23,6 +23,16 @@ import { createLogger } from "@redin/shared";
 import type { ServerClient } from "@redin/shared";
 import type { AppSheetReadClient } from "./appsheet";
 import type { TelegramSink } from "./telegram";
+// Inline alcance shape to avoid circular dep with @redin/tools.
+interface AlcanceShape {
+  especialidad: string;
+  subcategoria?: string;
+  cantidades?: string[];
+  conditions?: string[];
+  schedule_notes?: string;
+  value_estimate?: string;
+  summary: string;
+}
 
 const log = createLogger("sync:projector");
 
@@ -61,6 +71,167 @@ interface CandidateRow {
 }
 
 const ATTEMPTS_LIMIT = 3;
+
+// ---------------------------------------------------------------------------
+// OT alcance outbox drain — ots_extended.appsheet_alcance_pending
+// ---------------------------------------------------------------------------
+
+export interface OtAlcanceProjectorResult {
+  ot_row_id: string;
+  action: "synced" | "skipped" | "column_missing" | "already_gone";
+  attempts: number;
+  error?: string;
+}
+
+const OT_ALCANCE_ATTEMPTS_LIMIT = 5;
+
+/**
+ * Drain up to 5 ots_extended rows where appsheet_alcance_pending=true.
+ * Writes Alcance_OT to AppSheet; no-ops safely if the column doesn't exist
+ * yet (Estado_Redin precedent).
+ */
+export async function tickOtAlcanceOutbox(
+  deps: ProjectorTickDeps
+): Promise<OtAlcanceProjectorResult[]> {
+  const { data: pendingRows, error } = await deps.supa
+    .from("ots_extended")
+    .select(
+      "ot_row_id, alcance_jsonb, alcance_pdf_path, appsheet_alcance_sync_attempts"
+    )
+    .eq("appsheet_alcance_pending", true)
+    .lt("appsheet_alcance_sync_attempts", OT_ALCANCE_ATTEMPTS_LIMIT)
+    .limit(5);
+
+  if (error) {
+    log.error("ots_extended pending query failed", { error: error.message });
+    return [];
+  }
+
+  const results: OtAlcanceProjectorResult[] = [];
+
+  for (const row of pendingRows ?? []) {
+    const otRowId = row.ot_row_id as string;
+    const currentAttempts = (row.appsheet_alcance_sync_attempts as number) ?? 0;
+
+    // Bump attempts first (CAS-style claim).
+    const { data: claimed } = await deps.supa
+      .from("ots_extended")
+      .update({ appsheet_alcance_sync_attempts: currentAttempts + 1 })
+      .eq("ot_row_id", otRowId)
+      .eq("appsheet_alcance_sync_attempts", currentAttempts)
+      .select("ot_row_id");
+
+    if (!claimed || claimed.length === 0) {
+      results.push({ ot_row_id: otRowId, action: "skipped", attempts: currentAttempts, error: "claim_lost" });
+      continue;
+    }
+
+    const claimedAttempts = currentAttempts + 1;
+
+    // Load OT natural key from ots_mirror.
+    const { data: otMirrow } = await deps.supa
+      .from("ots_mirror")
+      .select("data")
+      .eq("row_id", otRowId)
+      .maybeSingle();
+
+    const otData = otMirrow?.data as Record<string, unknown> | null;
+    const idOrden =
+      (typeof otData?.["ID_Orden"] === "string" ? otData["ID_Orden"] : null) ??
+      (typeof otData?.["Numero_Orden"] === "string" ? otData["Numero_Orden"] : null) ??
+      (typeof otData?.["ID Orden"] === "string" ? otData["ID Orden"] : null);
+
+    if (!idOrden) {
+      const errMsg = "no_id_orden_in_ots_mirror";
+      await deps.supa
+        .from("ots_extended")
+        .update({ appsheet_alcance_last_error: errMsg })
+        .eq("ot_row_id", otRowId);
+      results.push({ ot_row_id: otRowId, action: "skipped", attempts: claimedAttempts, error: errMsg });
+      continue;
+    }
+
+    // Build the Alcance_OT value: JSON summary + PDF URL.
+    const alcanceJson = row.alcance_jsonb as AlcanceShape | null;
+    const pdfPath = typeof row.alcance_pdf_path === "string" ? row.alcance_pdf_path : null;
+    const alcanceValue = buildAlcanceOtValue(alcanceJson, pdfPath);
+
+    try {
+      const result = await deps.appsheet.editOT(otRowId, idOrden, {
+        Alcance_OT: alcanceValue,
+      });
+
+      if (result.alreadyGone) {
+        await deps.supa
+          .from("ots_extended")
+          .update({
+            appsheet_alcance_pending: false,
+            appsheet_alcance_last_error: null,
+          })
+          .eq("ot_row_id", otRowId);
+        results.push({ ot_row_id: otRowId, action: "already_gone", attempts: claimedAttempts });
+        continue;
+      }
+
+      if (result.columnMissing) {
+        // AppSheet column Alcance_OT doesn't exist yet — no-op per Estado_Redin precedent.
+        const errMsg = "appsheet_column_Alcance_OT_not_found";
+        await deps.supa
+          .from("ots_extended")
+          .update({ appsheet_alcance_last_error: errMsg })
+          .eq("ot_row_id", otRowId);
+        log.info("Alcance_OT column missing in AppSheet — leaving pending", { ot_row_id: otRowId });
+        results.push({ ot_row_id: otRowId, action: "column_missing", attempts: claimedAttempts, error: errMsg });
+        continue;
+      }
+
+      // Success.
+      await deps.supa
+        .from("ots_extended")
+        .update({
+          appsheet_alcance_pending: false,
+          appsheet_alcance_last_error: null,
+        })
+        .eq("ot_row_id", otRowId);
+      await deps.supa.from("eventos").insert({
+        type: "appsheet_alcance_synced",
+        entity_id: otRowId,
+        actor: "system:projector",
+        meta: { ot_row_id: otRowId, attempts: claimedAttempts },
+      });
+      log.info("AppSheet Alcance_OT synced", { ot_row_id: otRowId });
+      results.push({ ot_row_id: otRowId, action: "synced", attempts: claimedAttempts });
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      await deps.supa
+        .from("ots_extended")
+        .update({ appsheet_alcance_last_error: errMsg.slice(0, 500) })
+        .eq("ot_row_id", otRowId);
+      log.error("OT alcance AppSheet sync failed", { ot_row_id: otRowId, error: errMsg });
+      results.push({ ot_row_id: otRowId, action: "skipped", attempts: claimedAttempts, error: errMsg });
+    }
+  }
+
+  return results;
+}
+
+function buildAlcanceOtValue(
+  alcance: AlcanceShape | null,
+  pdfPath: string | null
+): string {
+  if (!alcance) return pdfPath ? `PDF: ${pdfPath}` : "";
+  const parts: string[] = [];
+  parts.push(`[${alcance.especialidad}]`);
+  if (alcance.subcategoria) parts.push(alcance.subcategoria);
+  if (alcance.summary) parts.push(alcance.summary);
+  if (alcance.value_estimate) parts.push(`Valor: ${alcance.value_estimate}`);
+  if (pdfPath) parts.push(`PDF: ${pdfPath}`);
+  return parts.join(" | ").slice(0, 2000);
+}
+
+// ---------------------------------------------------------------------------
+// Main tick — workers + OT alcance outbox
+// ---------------------------------------------------------------------------
 
 export async function tickOnce(
   deps: ProjectorTickDeps

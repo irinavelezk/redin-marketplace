@@ -12,7 +12,7 @@ import cron from "node-cron";
 import { createLogger, createServerClient, requireEnv } from "@redin/shared";
 import { AppSheetReadClient } from "./appsheet";
 import { SyncWorker } from "./mirror";
-import { tickOnce } from "./projector";
+import { tickOnce, tickOtAlcanceOutbox } from "./projector";
 import { TelegramBotSink } from "./telegram";
 
 const log = createLogger("sync:runner");
@@ -57,6 +57,9 @@ async function main() {
   void tickOnce({ supa, appsheet, telegram }).catch((e) =>
     log.error("initial projector tick failed", { error: String(e) })
   );
+  void tickOtAlcanceOutbox({ supa, appsheet, telegram }).catch((e) =>
+    log.error("initial OT alcance tick failed", { error: String(e) })
+  );
 
   // Re-entrancy guard so a slow tick doesn't queue up an overlap.
   let projectorRunning = false;
@@ -67,9 +70,15 @@ async function main() {
     }
     projectorRunning = true;
     try {
-      const results = await tickOnce({ supa, appsheet, telegram });
+      const [results, alcanceResults] = await Promise.all([
+        tickOnce({ supa, appsheet, telegram }),
+        tickOtAlcanceOutbox({ supa, appsheet, telegram }),
+      ]);
       if (results.length > 0) {
         log.info("projector tick", { count: results.length, results });
+      }
+      if (alcanceResults.length > 0) {
+        log.info("OT alcance tick", { count: alcanceResults.length, results: alcanceResults });
       }
     } catch (e) {
       log.error("projector tick failed", {
