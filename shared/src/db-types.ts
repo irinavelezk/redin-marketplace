@@ -37,6 +37,7 @@ export type {
   TonoAgreementMetricRow,
 };
 
+
 // ---------- Enums / literal unions ----------
 
 export type TecnicoEstado = "activo" | "pausado" | "baneado";
@@ -165,7 +166,8 @@ export type CandidateDossierRow = {
 
 export type CandidateDecisionRow = {
   id: string;
-  tecnico_id: string;
+  // Migration 012: nullable for shortlist-scope rows (per-OT decisions, not per-worker).
+  tecnico_id: string | null;
   dossier_id: string | null;
   decision: HrAction;
   resulting_state: CandidateState;
@@ -175,6 +177,14 @@ export type CandidateDecisionRow = {
   hr_reasoning: string | null;
   decided_by: string;
   decided_at: string;
+  // Migration 012: shortlist-scope extensions.
+  scope: "qualification" | "shortlist";
+  ot_id: string | null;
+  tono_recommendation_postulacion_id: string | null;
+  hr_postulacion_id: string | null;
+  pool_hash: string | null;
+  tono_confidence: number | null;
+  tono_reasoning: string | null;
 };
 
 export type HrNoteRow = {
@@ -374,6 +384,21 @@ export type ContactoMirrorRow = MirrorRowBase & {
   telefono: string | null;
 };
 
+// Migration 012: shortlist agreement metrics view row
+export type ShortlistAgreementMetricRow = {
+  decision_id: string;
+  ot_id: string;
+  decided_at: string;
+  decided_day: string;
+  decided_week: string;
+  hr_user: string;
+  tono_recommendation_postulacion_id: string;
+  hr_postulacion_id: string;
+  agreed_with_tono: boolean | null;
+  tono_confidence: number | null;
+  tono_reasoning: string | null;
+};
+
 // ---------- Supabase Database schema handle ----------
 
 type NoRelationships = [];
@@ -435,9 +460,10 @@ export interface Database {
       candidate_decisions: Table<
         CandidateDecisionRow,
         OptionalNulls<
-          Omit<CandidateDecisionRow, "id" | "decided_at"> & {
+          Omit<CandidateDecisionRow, "id" | "decided_at" | "scope"> & {
             id?: string;
             decided_at?: string;
+            scope?: "qualification" | "shortlist";
           }
         >,
         Partial<CandidateDecisionRow>
@@ -677,6 +703,10 @@ export interface Database {
       };
       tono_agreement_metrics: {
         Row: { [K in keyof TonoAgreementMetricRow]: TonoAgreementMetricRow[K] };
+        Relationships: NoRelationships;
+      };
+      shortlist_agreement_metrics: {
+        Row: ShortlistAgreementMetricRow;
         Relationships: NoRelationships;
       };
     };

@@ -1,9 +1,8 @@
 // Client button that POSTs to /api/hr/nudge-architect when HR wants to
 // prompt an architect to fill in the alcance for an OT that is missing it.
 //
-// Stream D wires the endpoint (/api/hr/nudge-architect/route.ts). If the
-// endpoint doesn't exist yet at integration time, the 404/500 is Stream D's
-// responsibility — this button just fires the request.
+// Pill style to fit next to other chips/badges on the pipeline OT card.
+// Auto-resets after 4s so HR can retry.
 
 "use client";
 
@@ -28,7 +27,6 @@ export function NudgeArchitectButton({ otId }: { otId: string }): JSX.Element {
       setState("error");
       console.error("nudge-architect error", e);
     }
-    // Reset after 4s so the button can be retried.
     setTimeout(() => setState("idle"), 4000);
   }
 

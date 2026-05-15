@@ -23,12 +23,14 @@
     "./find-legacy-by-name": "./src/find-legacy-by-name.ts",
     "./legacy-name-match": "./src/legacy-name-match.ts",
     "./schemas": "./src/schemas.ts",
-    "./manos": "./src/manos/index.ts"
+    "./manos": "./src/manos/index.ts",
+    "./recommend-shortlist-candidate": "./src/recommend-shortlist-candidate.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.41.0",
     "@redin/shared": "*",
     "@supabase/supabase-js": "^2.46.1"
   },

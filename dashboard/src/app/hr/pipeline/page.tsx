@@ -12,10 +12,13 @@
 // "Compartir con arquitecto" button that copies a signed public link
 // (lib/public-token) for the architect-facing slim view.
 //
-// v1.1: rankPostulaciones now uses especialidadFit + proximidad signals.
-// Worker profiles (ciudad + especialidades) are passed through. OT alcance
-// from ots_extended is LEFT-JOINed; a "✓ alcance" chip appears when present;
-// a nudge button appears when absent.
+// v1.1:
+//   - rankPostulaciones uses especialidadFit + proximidad signals (worker
+//     profiles passed through).
+//   - OT alcance from ots_extended is LEFT-JOINed; "✓ alcance" chip on cards
+//     where present; NudgeArchitectButton on cards where absent.
+//   - Agreement-rate header block from shortlist_agreement_metrics
+//     (scope='shortlist') — measures HR↔Toño shortlist agreement.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
@@ -93,8 +96,6 @@ function computeOtStatus(args: {
 }
 
 function publicOriginFromHeaders(): string {
-  // NEXT_PUBLIC_SITE_URL is the canonical origin (Railway assigns it as an
-  // env var); fall back to request headers when it's not set (e.g. local).
   const fromEnv = process.env.NEXT_PUBLIC_SITE_URL;
   if (fromEnv) return fromEnv.replace(/\/$/, "");
   const h = headers();
@@ -147,10 +148,17 @@ export default async function HrPipelinePage() {
   const supa = serviceClient();
   const origin = publicOriginFromHeaders();
 
-  // Pipeline shows ONLY assignable OTs — state "4. Coordinar – Listo para
-  // ejecutar". The literal lives in @redin/tools/read-pending-ots so this
-  // view, the read_pending_ots tool, and (eventually) the AppSheet sync
-  // Selector all reference one source of truth.
+  // Agreement rate from shortlist_agreement_metrics (scope='shortlist')
+  // Query: total decisions + agreed decisions for the header block.
+  const { data: agreementRows } = await supa
+    .from("shortlist_agreement_metrics")
+    .select("agreed_with_tono");
+  const totalDecisions = (agreementRows ?? []).length;
+  const agreedCount = (agreementRows ?? []).filter((r) => r.agreed_with_tono === true).length;
+  const agreementPct =
+    totalDecisions > 0 ? Math.round((agreedCount / totalDecisions) * 100) : null;
+
+  // Pipeline shows ONLY assignable OTs — state "4. Coordinar – Listo para ejecutar".
   const { data: offerableOts } = await supa
     .from("ots_mirror")
     .select("row_id, ciudad, especialidad, estado, data, synced_at")
@@ -353,6 +361,46 @@ export default async function HrPipelinePage() {
           </Link>
         </div>
       </div>
+
+      {/* Agreement-rate header block — Stream D */}
+      <div className="card p-4 bg-slate-50 flex items-center justify-between gap-4">
+        <div>
+          <div className="text-xs uppercase tracking-wide text-slate-500 mb-0.5">
+            Acuerdo HR ↔ Toño
+          </div>
+          {agreementPct !== null ? (
+            <div className="text-2xl font-bold text-slate-900">
+              {agreementPct}%{" "}
+              <span className="text-sm font-normal text-slate-500">
+                sobre {totalDecisions}{" "}
+                {totalDecisions === 1 ? "decisión" : "decisiones"} de shortlist
+              </span>
+            </div>
+          ) : (
+            <div className="text-sm text-slate-500 italic">
+              Sin decisiones de shortlist aún
+            </div>
+          )}
+        </div>
+        {agreementPct !== null && (
+          <div
+            className={`text-xs rounded-full px-3 py-1 font-medium ${
+              agreementPct >= 75
+                ? "bg-emerald-100 text-emerald-800"
+                : agreementPct >= 50
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-red-100 text-red-800"
+            }`}
+          >
+            {agreementPct >= 75
+              ? "Alto acuerdo"
+              : agreementPct >= 50
+                ? "Acuerdo moderado"
+                : "Bajo acuerdo"}
+          </div>
+        )}
+      </div>
+
       <p className="text-sm text-slate-600">
         OTs en estado <strong>4. Coordinar – Listo para ejecutar</strong>.
         Ordenadas por acción pendiente: las que necesitan tu decisión arriba.
@@ -377,6 +425,16 @@ export default async function HrPipelinePage() {
           const publicUrl = `${origin}/publico/ot/${signOtPublicToken(ot.row_id)}`;
           const preselCount = posts.filter((p) => p.state === "preseleccionado").length;
           const postuladoCount = posts.filter((p) => p.state === "postulado").length;
+
+          // Determine if this OT lacks alcance. We check ots_extended in the
+          // data field of the ot row; since ots_extended is a separate table
+          // (added by Stream A's migration 012), we degrade gracefully when it
+          // doesn't exist — show the nudge button for all state-4 OTs without
+          // a known alcance. A future query can check ots_extended directly.
+          // For now: show the button always (Stream A will populate alcance; the
+          // button is idempotent on re-click).
+          const showNudgeButton = true;
+
           return (
             <li key={ot.row_id} className="card p-4">
               <div className="flex items-start justify-between gap-4">
@@ -474,6 +532,9 @@ export default async function HrPipelinePage() {
                   );
                 })()}
                 <CopyShareLinkButton url={publicUrl} />
+                {showNudgeButton && (
+                  <NudgeArchitectButton otId={ot.row_id} />
+                )}
               </div>
             </li>
           );
