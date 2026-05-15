@@ -91,8 +91,11 @@ create index if not exists idx_decisions_shortlist_ot
 -- ============================================================================
 -- Original view from migration 007 only exposed qualification-scope rows;
 -- now we expose all scope values and let consumers GROUP BY scope as needed.
+-- Postgres requires DROP+CREATE (not CREATE OR REPLACE) when view column
+-- names change shape from the previous definition.
 
-create or replace view tono_agreement_metrics as
+drop view if exists tono_agreement_metrics;
+create view tono_agreement_metrics as
 select
   d.id                                                        as decision_id,
   d.tecnico_id,
