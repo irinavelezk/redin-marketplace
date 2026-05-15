@@ -22,6 +22,10 @@ const VALID_TIPOS = new Set([
   "altura",
   "antecedentes",
   "otro",
+  // Story 17: optional dossier document types
+  "cert_estudios",
+  "cert_trabajos_previos",
+  "evidencia_arl",
 ]);
 
 function safeFilename(name: string): string {

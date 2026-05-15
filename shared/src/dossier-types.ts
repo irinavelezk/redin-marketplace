@@ -325,6 +325,41 @@ export interface CandidateDossier {
   /** Free-text nuance, ≤ 2000 chars. Read by HR. NEVER used for filtering. */
   dossier: string;
 
+  // ---- Optional document references (Story 17) ----
+  // Captured only when the worker supplies them during screening. All are
+  // OPTIONAL — their absence does NOT block dossier submission or HR approval.
+  // HR sees soft "Sin …" badges from missing_optional; they are informational,
+  // never state-machine blockers.
+
+  /** doc id from upload_documento tipo='cert_estudios' if supplied */
+  cert_estudios_doc_id?: string;
+
+  /** doc id from upload_documento tipo='cert_trabajos_previos' if supplied */
+  cert_trabajos_previos_doc_id?: string;
+
+  /**
+   * Whether the worker has their own vehicle (any type).
+   * undefined = never asked / worker skipped the question.
+   */
+  tiene_vehiculo?: boolean;
+
+  /**
+   * Vehicle type narrated by the worker ("moto", "carro", "camioneta", etc.).
+   * Populated only when tiene_vehiculo = true.
+   */
+  tipo_vehiculo?: string;
+
+  /** doc id from upload_documento tipo='evidencia_arl' if supplied */
+  arl_doc_id?: string;
+
+  /**
+   * Which optional fields were NOT provided. Populated by submit_candidate_dossier
+   * from the absent optional fields above. HR queue reads this to render soft
+   * "Sin ARL" / "Sin cert. estudios" etc. badges.
+   * Always present — empty array if the worker filled everything.
+   */
+  missing_optional: string[];
+
   // ---- Graduated-autonomy fields (decision 9) ----
   // Toño's SUGGESTION + how sure + why. HR sees all three on the queue card.
   // Phase 1: HR reviews 100% regardless. No auto-execution.

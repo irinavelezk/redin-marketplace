@@ -1,4 +1,4 @@
-// Pre-LLM branch for customer rating replies.
+// Pre-LLM branch for customer rating replies and customer-contact hand-offs.
 //
 // Flow: when sync-mp detects an OT flipping to "Terminado" it enqueues a
 // WhatsApp from Toño asking the customer for stars + an optional comment.
@@ -6,11 +6,17 @@
 // system prompt (which is built around técnico interactions) — that risks
 // regressing the worker happy path. Instead, intercept here:
 //
-//   1. If the inbound phone has a recent customer_rating_request outbound
+//   1. Collision rule — WORKER > CUSTOMER. If the inbound phone is also in
+//      tecnicos_extended, treat as worker and return handled=false immediately.
+//   2. If the inbound phone has a recent customer_rating_request outbound
 //      AND we haven't already recorded a rating for that ot_id, treat the
 //      message as a rating reply: parse stars + notes, write to `ratings`,
 //      send a canned ack.
-//   2. Otherwise return handled=false and let agent.ts continue normal flow.
+//   3. NEW (Story 18): If the phone is a known contact in contactos_mirror
+//      BUT has no pending rating request, send a canned polite hand-off and
+//      log customer_contact_intent_attempt. Never falls through to Toño's
+//      worker tool set.
+//   4. Otherwise return handled=false and let agent.ts continue normal flow.
 //
 // Edge cases:
 //   - Reply has no digit 1-5 → send retry, don't dedup; same handler fires
@@ -27,6 +33,14 @@ const log = createLogger("tono:customer-ratings");
 const REQUEST_WINDOW_HOURS = 72;
 // Cap on free-text comment length to keep the row small.
 const NOTES_MAX = 500;
+
+// Canned hand-off for customer contacts with no pending rating.
+// Story 18: spec §6 "Stream B — Toño quality (Stories 17 + 18)".
+const CUSTOMER_CONTACT_HANDOFF =
+  "Hola, gracias por escribir. Este número es para técnicos buscando " +
+  "trabajo con Redin, y para clientes calificando un servicio terminado. " +
+  "¿Quieres calificar el trabajo de un técnico? Si necesitas otra cosa, " +
+  "Jose Luis (tu contacto en Redin) puede ayudarte.";
 
 export interface CustomerRatingResult {
   handled: boolean;
@@ -45,8 +59,39 @@ export async function tryHandleCustomerRatingReply(
   phone: string,
   text: string
 ): Promise<CustomerRatingResult> {
+  // Collision rule: if the phone belongs to a registered worker, treat as
+  // worker — do NOT short-circuit. Workers take precedence over customer contacts.
+  const { data: workerRow } = await supabase
+    .from("tecnicos_extended")
+    .select("tecnico_id")
+    .eq("phone", phone)
+    .maybeSingle();
+  if (workerRow) {
+    return { handled: false };
+  }
+
   const request = await loadOutstandingRequest(supabase, phone);
-  if (!request) return { handled: false };
+
+  if (!request) {
+    // Check if the phone is a known customer contact (contactos_mirror).
+    // If so, short-circuit with the hand-off message — never reaches worker tools.
+    const { data: contactRow } = await supabase
+      .from("contactos_mirror")
+      .select("row_id")
+      .eq("telefono", phone)
+      .maybeSingle();
+    if (contactRow) {
+      log.info("customer contact intent attempt — sending hand-off", { phone });
+      await supabase.from("eventos").insert({
+        type: "customer_contact_intent_attempt",
+        entity_id: null,
+        actor: `customer:${phone}`,
+        meta: { phone, inbound_text: text },
+      });
+      return { handled: true, reply: CUSTOMER_CONTACT_HANDOFF };
+    }
+    return { handled: false };
+  }
 
   const { stars, notes } = parseRatingText(text);
   if (stars === null) {
