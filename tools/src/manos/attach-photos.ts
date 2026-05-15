@@ -1,7 +1,7 @@
 // attach_photos — appends photo URLs to an OT's ots_extended row.
 //
 // Identity gate: arq_row_id injected from session.meta via agent dispatcher.
-// Ownership check: validates that ots_mirror.data->>'Arquitecto_Asignado' = arq_row_id.
+// Ownership check: validates that ots_mirror.data->>'ID_Arquitecto' = arq_row_id.
 
 import type { ToolContext } from "../context";
 import type { ToolResult } from "../types";
@@ -110,12 +110,20 @@ export async function verifyOtOwnership(
   }
 
   const d = otRow.data as Record<string, unknown>;
-  const asignado =
-    d["Arquitecto_Asignado"] ?? d["arquitecto_asignado"] ?? d["Row ID del Arquitecto"];
-  if (String(asignado ?? "") !== arqRowId) {
+  // AppSheet `Ordenes_Trabajo` column for the assigned architect is `ID_Arquitecto`
+  // (foreign key to arquitectos_mirror.row_id). `Arquitecto_Asignado` is a
+  // separate (and in practice empty) AppSheet field; do not rely on it.
+  const idArq = String(d["ID_Arquitecto"] ?? "").trim();
+  if (idArq !== arqRowId) {
+    const realName = typeof d["Nombre_Arquitecto_Real"] === "string"
+      ? (d["Nombre_Arquitecto_Real"] as string).trim()
+      : "";
+    const hint = realName
+      ? `Esa OT está asignada a ${realName}, no a ti — no puedo editar el alcance.`
+      : "Esa OT no está asignada a ti — no puedo editar el alcance.";
     return err("OT is not assigned to this architect", {
       code: "not_your_ot",
-      user_message_hint: "Esa OT no aparece en tu lista.",
+      user_message_hint: hint,
     });
   }
 

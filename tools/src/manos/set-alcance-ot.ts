@@ -2,7 +2,7 @@
 // and sets appsheet_alcance_pending=true to trigger the projector outbox.
 //
 // Identity gate: arq_row_id injected from session.meta via agent dispatcher.
-// Ownership check: validates ots_mirror.data->>'Arquitecto_Asignado' = arq_row_id.
+// Ownership check: validates ots_mirror.data->>'ID_Arquitecto' = arq_row_id.
 
 import type { ToolContext } from "../context";
 import type { ToolResult } from "../types";
