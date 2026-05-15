@@ -222,7 +222,6 @@ export default async function PublicOtPage({ params }: Props) {
     postulaciones,
     openPosByTecnico: openPosByTec,
     ratingByTecnico: ratingByTec,
-    rateByTecnico: new Map(),
   });
 
   const applicants: ApplicantView[] = ranked.map((r) => {

@@ -12,20 +12,22 @@
 // "Compartir con arquitecto" button that copies a signed public link
 // (lib/public-token) for the architect-facing slim view.
 //
-// The internal candidate ranking (disponibilidad → calidad → costo) is
-// preserved per OT — calidad will become the primary signal for the future
-// autonomous-assignment agent, so HR getting accustomed to it now matters.
+// v1.1: rankPostulaciones now uses especialidadFit + proximidad signals.
+// Worker profiles (ciudad + especialidades) are passed through. OT alcance
+// from ots_extended is LEFT-JOINed; a "✓ alcance" chip appears when present;
+// a nudge button appears when absent.
 
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { rankPostulaciones } from "@/lib/ranking";
 import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import { signOtPublicToken } from "@/lib/public-token";
 import { OFFERABLE_ESTADO } from "@redin/tools/read-pending-ots";
-import type { PostulacionRow, ContratoStatus } from "@redin/shared";
+import type { PostulacionRow, ContratoStatus, WorkerProfile, OtAlcance } from "@redin/shared";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
 import { CopyShareLinkButton } from "@/components/CopyShareLinkButton";
+import { NudgeArchitectButton } from "@/components/NudgeArchitectButton";
 
 export const dynamic = "force-dynamic";
 
@@ -101,6 +103,42 @@ function publicOriginFromHeaders(): string {
   return `${proto}://${host}`;
 }
 
+interface OtsExtendedRow {
+  ot_row_id: string;
+  alcance_jsonb: unknown | null;
+}
+
+/** LEFT JOIN ots_extended — graceful degrade when table doesn't exist yet. */
+async function fetchOtsExtendedForPipeline(
+  supa: ReturnType<typeof serviceClient>,
+  otIds: string[]
+): Promise<Map<string, OtsExtendedRow>> {
+  if (otIds.length === 0) return new Map();
+  try {
+    // Cast through `unknown` — ots_extended is added by Stream A migration 012
+    // and is not yet in the hand-authored Database schema. The query degrades
+    // gracefully (returns empty map) if the table doesn't exist.
+    const { data, error } = await (supa as unknown as {
+      from: (t: string) => {
+        select: (cols: string) => {
+          in: (col: string, vals: string[]) => Promise<{ data: unknown[] | null; error: unknown }>;
+        };
+      };
+    })
+      .from("ots_extended")
+      .select("ot_row_id, alcance_jsonb")
+      .in("ot_row_id", otIds);
+    if (error) return new Map();
+    const map = new Map<string, OtsExtendedRow>();
+    for (const row of (data ?? []) as OtsExtendedRow[]) {
+      map.set(row.ot_row_id, row);
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
 export default async function HrPipelinePage() {
   const auth = serverClientBoundToCookies();
   const { data: userData } = await auth.auth.getUser();
@@ -121,13 +159,11 @@ export default async function HrPipelinePage() {
   const pendingOts = offerableOts ?? [];
   const offerableIds = pendingOts.map((o) => o.row_id);
 
+  // LEFT JOIN ots_extended for alcance chip + nudge button.
+  const extendedMap = await fetchOtsExtendedForPipeline(supa, offerableIds);
+
   // Postulaciones AND contratos scoped to the offerable OTs only — both
   // feed the per-OT status pill computation and the ranking display.
-  // We pull contract id so we can link directly to the active contract
-  // (any non-cancelado) from the pipeline card. The schema enforces "at
-  // most one active per OT" by convention, not by constraint — if we ever
-  // see two, last-write-wins on the map below and a follow-up data audit
-  // is warranted.
   const [postsRes, contratosRes] = offerableIds.length
     ? await Promise.all([
         supa.from("postulaciones").select("*").in("ot_id", offerableIds),
@@ -150,9 +186,7 @@ export default async function HrPipelinePage() {
       ];
   const allPostsForPending: PostulacionRow[] = postsRes.data ?? [];
   const contratoStatesByOt = new Map<string, Set<ContratoStatus>>();
-  // Active contract id per OT — first non-cancelado we encounter. Order is
-  // sent_at desc nulls first so an in-flight borrador (no sent_at yet)
-  // wins over an older signed/enviado on the same OT.
+  // Active contract id per OT — first non-cancelado we encounter.
   const activeContractIdByOt = new Map<string, string>();
   for (const c of contratosRes.data ?? []) {
     if (!c.ot_id) continue;
@@ -164,10 +198,9 @@ export default async function HrPipelinePage() {
     }
   }
 
-  // Internal performance (Jose + arquitectos via /hr/evaluations). calidad
-  // is the seed for the future autonomous-assignment agent; we keep it
-  // visible on the pipeline so HR is calibrated to the signal early.
   const tecnicoIds = [...new Set(allPostsForPending.map((p) => p.tecnico_id))];
+
+  // Internal performance (calidad signal).
   const { data: perfRows } = tecnicoIds.length
     ? await supa
         .from("tecnico_performance")
@@ -206,6 +239,8 @@ export default async function HrPipelinePage() {
     nombreByTec.set(r.tecnico_id, r.nombre ?? null);
   }
 
+  // Worker ciudad + especialidades from tecnico_registered events.
+  // Both are needed for the new especialidadFit + proximidad ranking signals.
   const { data: ciudadEvents } = tecnicoIds.length
     ? await supa
         .from("eventos")
@@ -215,11 +250,18 @@ export default async function HrPipelinePage() {
         .order("created_at", { ascending: false })
     : { data: [] };
   const ciudadByTec = new Map<string, string | null>();
+  const workerProfiles = new Map<string, WorkerProfile>();
   for (const e of ciudadEvents ?? []) {
     if (!e.entity_id || ciudadByTec.has(e.entity_id)) continue;
     const meta = e.meta as Record<string, unknown> | null;
-    const c = meta && typeof meta.ciudad === "string" ? meta.ciudad : null;
-    ciudadByTec.set(e.entity_id, c);
+    const ciudad = meta && typeof meta.ciudad === "string" ? meta.ciudad : null;
+    ciudadByTec.set(e.entity_id, ciudad);
+    const especialidades = Array.isArray(meta?.especialidades)
+      ? (meta!.especialidades as unknown[]).filter(
+          (x): x is string => typeof x === "string"
+        )
+      : null;
+    workerProfiles.set(e.entity_id, { ciudad, especialidades });
   }
 
   const postsByOt = new Map<string, PostulacionRow[]>();
@@ -228,12 +270,34 @@ export default async function HrPipelinePage() {
     postsByOt.get(p.ot_id)!.push(p);
   }
 
-  // Pre-compute status + sort key for every OT so we can re-order before
-  // rendering. Stable secondary sort by synced_at desc.
+  // Build otFields + otAlcance maps for ranking.
+  const otFieldsMap = new Map<
+    string,
+    { ciudad: string | null; especialidad: string | null; subcategoria?: string | null }
+  >();
+  const otAlcanceMap = new Map<string, OtAlcance | null>();
+  for (const ot of pendingOts) {
+    otFieldsMap.set(ot.row_id, { ciudad: ot.ciudad, especialidad: ot.especialidad });
+    const ext = extendedMap.get(ot.row_id);
+    if (ext) {
+      const aj = ext.alcance_jsonb as Record<string, unknown> | null;
+      otAlcanceMap.set(ot.row_id, aj
+        ? {
+            especialidad: typeof aj.especialidad === "string" ? aj.especialidad : null,
+            subcategoria: typeof aj.subcategoria === "string" ? aj.subcategoria : null,
+          }
+        : null);
+    } else {
+      otAlcanceMap.set(ot.row_id, null);
+    }
+  }
+
+  // Pre-compute status + sort key for every OT.
   interface OtRow {
     ot: (typeof pendingOts)[number];
     posts: PostulacionRow[];
     status: OtStatus;
+    hasAlcance: boolean;
   }
   const rows: OtRow[] = pendingOts.map((ot) => {
     const posts = postsByOt.get(ot.row_id) ?? [];
@@ -244,13 +308,14 @@ export default async function HrPipelinePage() {
       postStates,
       contractStates,
     });
-    return { ot, posts, status };
+    const ext = extendedMap.get(ot.row_id);
+    const hasAlcance = !!(ext && ext.alcance_jsonb !== null);
+    return { ot, posts, status, hasAlcance };
   });
   rows.sort((a, b) => {
     if (a.status.sortIndex !== b.status.sortIndex) {
       return a.status.sortIndex - b.status.sortIndex;
     }
-    // Tiebreak: most-recently-synced first, so freshness still matters.
     return (
       new Date(b.ot.synced_at ?? 0).getTime() -
       new Date(a.ot.synced_at ?? 0).getTime()
@@ -300,12 +365,14 @@ export default async function HrPipelinePage() {
         </div>
       )}
       <ul className="space-y-4">
-        {rows.map(({ ot, posts, status }) => {
+        {rows.map(({ ot, posts, status, hasAlcance }) => {
           const ranked = rankPostulaciones({
             postulaciones: posts,
             openPosByTecnico: openPosByTec,
             ratingByTecnico: ratingByTec,
-            rateByTecnico: new Map(),
+            workerProfiles,
+            otFields: otFieldsMap,
+            otAlcance: otAlcanceMap,
           });
           const publicUrl = `${origin}/publico/ot/${signOtPublicToken(ot.row_id)}`;
           const preselCount = posts.filter((p) => p.state === "preseleccionado").length;
@@ -314,8 +381,15 @@ export default async function HrPipelinePage() {
             <li key={ot.row_id} className="card p-4">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="text-sm text-slate-500">
-                    {ot.ciudad ?? "—"} · {ot.especialidad ?? "—"}
+                  <div className="flex items-center gap-2 text-sm text-slate-500">
+                    <span>{ot.ciudad ?? "—"} · {ot.especialidad ?? "—"}</span>
+                    {hasAlcance ? (
+                      <span className="inline-flex items-center gap-0.5 text-[11px] bg-emerald-100 text-emerald-700 rounded-full px-2 py-0.5 font-medium">
+                        ✓ alcance
+                      </span>
+                    ) : (
+                      <NudgeArchitectButton otId={ot.row_id} />
+                    )}
                   </div>
                   <div className="font-medium text-slate-900 truncate">
                     {otTitle(ot)}
@@ -354,6 +428,8 @@ export default async function HrPipelinePage() {
                         <span className="text-slate-500">{r.postulacion.state}</span>
                       </span>
                       <span className="text-xs text-slate-500">
+                        fit {r.scores.especialidadFit.toFixed(2)} ·{" "}
+                        prox {r.scores.proximidad.toFixed(0)} ·{" "}
                         dispo {r.scores.disponibilidad.toFixed(2)} ·{" "}
                         calidad {r.scores.calidad?.toFixed(1) ?? "—"}
                       </span>
