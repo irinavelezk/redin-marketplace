@@ -23,6 +23,7 @@ import type { ToolContext } from "./context";
 import type { Json } from "@redin/shared";
 import { ok, err, type ToolResult } from "./types";
 import { recordEvent } from "./events";
+import { detectLegacyMatches } from "./detect-legacy-match";
 import {
   CIUDAD_CANONICAL,
   CATEGORIA_VALUES,
@@ -639,6 +640,48 @@ export async function submitCandidateDossier(
       resumed_from_withdrawn: resumedFromWithdrawn,
     },
   });
+
+  // Soft signal: check the worker's nombre against approved+incomplete legacy
+  // bootstrap rows. We DON'T change the flow on a hit (per policy 2026-05-16
+  // the worker just gets re-screened as new); we only record an event so the
+  // HR queue card can surface a "posible legacy" badge for manual merge
+  // consideration. Non-fatal — failures here never affect the submission.
+  try {
+    const { data: tecRow } = await ctx.supabase
+      .from("tecnicos_extended")
+      .select("nombre")
+      .eq("tecnico_id", effectiveTecnicoId)
+      .maybeSingle();
+    const nombre = (tecRow?.nombre as string | null | undefined)?.trim() || "";
+    if (nombre) {
+      const matches = await detectLegacyMatches(
+        ctx.supabase,
+        nombre,
+        effectiveTecnicoId
+      );
+      if (matches.length > 0) {
+        await recordEvent(ctx, {
+          type: "possible_legacy_match",
+          entity_id: effectiveTecnicoId,
+          actor: "system",
+          meta: {
+            detection_query: nombre,
+            matches: matches.map((m) => ({
+              legacy_tecnico_id: m.tecnico_id,
+              legacy_nombre: m.nombre,
+              similarity: m.similarity,
+              distance: m.distance,
+            })),
+          },
+        });
+      }
+    }
+  } catch (e) {
+    ctx.logger.warn("legacy name match detection failed (non-fatal)", {
+      tecnico_id: effectiveTecnicoId,
+      error: e instanceof Error ? e.message : String(e),
+    });
+  }
 
   const out: SubmitCandidateDossierOutput = {
     code: mergeOccurred ? ("merged" as SubmitDossierCode) : "submitted",
