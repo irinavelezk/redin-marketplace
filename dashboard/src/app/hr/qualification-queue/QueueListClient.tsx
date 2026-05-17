@@ -69,6 +69,9 @@ const MISSING_OPTIONAL_LABELS: Record<string, string> = {
   cert_estudios: "Sin cert. estudios",
   cert_trabajos_previos: "Sin cert. trabajos previos",
   vehiculo: "Sin vehículo",
+  // Defensive: surfaces only if a tiene_vehiculo=true dossier ever lands without
+  // a valid placa. submit_candidate_dossier.validateVehicle should prevent this.
+  placa: "Sin placa",
 };
 
 function MissingOptionalBadge({ missingKey }: { missingKey: string }): JSX.Element {

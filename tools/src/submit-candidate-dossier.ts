@@ -45,6 +45,9 @@ const RECOMMENDATION_SET = new Set<string>(TONO_RECOMMENDATION_VALUES);
 const DOSSIER_MAX_CHARS = 2000;
 const REASONING_MIN = 10;
 const REASONING_MAX = 500;
+// Colombian plate after uppercase + strip whitespace/hyphens.
+// Cars: 3 letras + 3 dígitos (ABC123). Motos: 3 letras + 2 dígitos + 1 letra (ABC12D).
+const PLACA_RE = /^[A-Z]{3}[0-9]{2,3}[A-Z]?$/;
 const ALREADY_DECIDED_STATES: ReadonlySet<CandidateState> = new Set<CandidateState>([
   "approved",
   "pending",
@@ -68,9 +71,87 @@ function normalizeCedula(raw: string): string {
   return raw.replace(/[^\d]/g, "");
 }
 
+// Conditional vehicle check. Mirrors register_tecnico.validateIdentity's
+// envelope so the agent's REGLA ABSOLUTA handles re-prompting uniformly.
+//   tiene_vehiculo === undefined: never asked. ok, no plate.
+//   tiene_vehiculo === false:     must NOT have tipo or placa. else INVALID_VEHICLE.
+//   tiene_vehiculo === true:      must have tipo + plate matching PLACA_RE.
+function validateVehicle(raw: CandidateDossier):
+  | { ok: true; placa?: string }
+  | {
+      ok: false;
+      error: "INVALID_VEHICLE";
+      next_action: "ask_placa" | "ask_tipo_vehiculo" | "ask_vehicle_consistency";
+      missing: ("placa" | "tipo_vehiculo" | "vehicle_consistency")[];
+      user_message_hint: string;
+    } {
+  const tiene = raw.tiene_vehiculo;
+  const tipoRaw = (raw.tipo_vehiculo ?? "").trim();
+  const placaRaw = (raw.placa_vehiculo ?? "").trim();
+
+  if (tiene === undefined || tiene === null) {
+    // Never asked. Worker skipped the question — valid.
+    return { ok: true };
+  }
+
+  if (tiene === false) {
+    // Worker said no — there must be no plate or type leaked through.
+    if (tipoRaw.length > 0 || placaRaw.length > 0) {
+      return {
+        ok: false,
+        error: "INVALID_VEHICLE",
+        next_action: "ask_vehicle_consistency",
+        missing: ["vehicle_consistency"],
+        user_message_hint:
+          "Dijiste que no tienes vehículo pero me pasaste placa o tipo; aclárame: ¿tienes vehículo o no?",
+      };
+    }
+    return { ok: true };
+  }
+
+  // tiene === true — require tipo and placa.
+  if (tipoRaw.length === 0) {
+    return {
+      ok: false,
+      error: "INVALID_VEHICLE",
+      next_action: "ask_tipo_vehiculo",
+      missing: ["tipo_vehiculo"],
+      user_message_hint: "¿Qué tipo de vehículo es — moto, carro, camioneta?",
+    };
+  }
+
+  const placaNorm = placaRaw.toUpperCase().replace(/[\s-]/g, "");
+  if (!PLACA_RE.test(placaNorm)) {
+    return {
+      ok: false,
+      error: "INVALID_VEHICLE",
+      next_action: "ask_placa",
+      missing: ["placa"],
+      user_message_hint:
+        "Necesito la placa del vehículo, por ejemplo ABC123 (carro) o ABC12D (moto).",
+    };
+  }
+
+  return { ok: true, placa: placaNorm };
+}
+
+// validatePayload return shape.
+//   ok=true: normalized dossier ready to persist
+//   ok=false: error message + optional next_action envelope.
+//     The next_action arm mirrors register_tecnico's INCOMPLETE_IDENTITY rejection
+//     so the agent can re-prompt the worker without changing flow.
+interface ValidatePayloadFail {
+  ok: false;
+  error: string;
+  code?: string;
+  next_action?: string;
+  missing?: string[];
+  user_message_hint?: string;
+}
+
 function validatePayload(
   raw: CandidateDossier
-): { ok: true; result: ValidatedDossier } | { ok: false; error: string } {
+): { ok: true; result: ValidatedDossier } | ValidatePayloadFail {
   if (!raw || typeof raw !== "object") {
     return { ok: false, error: "dossier must be an object" };
   }
@@ -181,6 +262,22 @@ function validatePayload(
   // gaps
   const gaps = Array.isArray(raw.gaps) ? raw.gaps.filter((g) => typeof g === "string") : [];
 
+  // Vehicle gate. Mirrors register_tecnico.validateIdentity. If tiene_vehiculo
+  // is true the agent must supply tipo + valid Colombian plate; on rejection we
+  // surface the rich envelope so the agent re-prompts via REGLA ABSOLUTA.
+  const vehCheck = validateVehicle(raw);
+  if (!vehCheck.ok) {
+    return {
+      ok: false,
+      error: vehCheck.error,
+      code: "INVALID_VEHICLE",
+      next_action: vehCheck.next_action,
+      missing: vehCheck.missing,
+      user_message_hint: vehCheck.user_message_hint,
+    };
+  }
+  const placaNormalized = vehCheck.placa;
+
   // Compute missing_optional: which optional doc fields were NOT provided.
   const missingOptional: string[] = [];
   if (!raw.cert_estudios_doc_id) missingOptional.push("cert_estudios");
@@ -234,6 +331,7 @@ function validatePayload(
     cert_trabajos_previos_doc_id: raw.cert_trabajos_previos_doc_id ?? undefined,
     tiene_vehiculo: raw.tiene_vehiculo ?? undefined,
     tipo_vehiculo: raw.tipo_vehiculo ?? undefined,
+    placa_vehiculo: placaNormalized ?? undefined,
     arl_doc_id: raw.arl_doc_id ?? undefined,
     missing_optional: missingOptional,
     tono_recommendation: raw.tono_recommendation,
@@ -384,6 +482,17 @@ export async function submitCandidateDossier(
 
   const validation = validatePayload(input.dossier);
   if (!validation.ok) {
+    // Rich envelope (next_action present) = the agent must re-prompt the
+    // worker per REGLA ABSOLUTA. Plain validation error = retry-or-escalate
+    // path via the `invalid_payload` outcome code.
+    if (validation.next_action) {
+      return err(validation.error, {
+        code: validation.code,
+        next_action: validation.next_action,
+        missing: validation.missing,
+        user_message_hint: validation.user_message_hint,
+      });
+    }
     const out: SubmitCandidateDossierOutput = {
       code: "invalid_payload",
       effective_tecnico_id: input.tecnico_id,

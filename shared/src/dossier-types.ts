@@ -349,6 +349,14 @@ export interface CandidateDossier {
    */
   tipo_vehiculo?: string;
 
+  /**
+   * Colombian vehicle plate, uppercase, no separators (e.g. "ABC123" or "ABC12D").
+   * Required when tiene_vehiculo = true (enforced by submit_candidate_dossier
+   * validateVehicle — mirrors the INCOMPLETE_IDENTITY next_action envelope).
+   * Must be absent when tiene_vehiculo = false.
+   */
+  placa_vehiculo?: string;
+
   /** doc id from upload_documento tipo='evidencia_arl' if supplied */
   arl_doc_id?: string;
 

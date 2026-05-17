@@ -186,6 +186,53 @@ async function loadDisplayName(
   return null;
 }
 
+// Pull the worker's ciudad with priority order: (1) tecnicos_extended.enrichment_data.ciudad_base
+// (CASO A graduates), (2) latest candidate_dossiers.payload.ciudad_base (CASO B graduates),
+// (3) tecnico_registered event meta.ciudad (cold workers), (4) null.
+// Only called for routingMode="returning" — used by CASO C's proactive opener to
+// pre-load read_pending_ots without an extra Toño tool call.
+async function loadCiudad(
+  sb: ServerClient,
+  tecnico_id: string
+): Promise<string | null> {
+  const pick = (m: unknown, key: string): string | null => {
+    if (m && typeof m === "object" && !Array.isArray(m)) {
+      const obj = m as Record<string, unknown>;
+      const v = obj[key];
+      if (typeof v === "string" && v.trim().length > 0) return v.trim();
+    }
+    return null;
+  };
+
+  const { data: tec } = await sb
+    .from("tecnicos_extended")
+    .select("enrichment_data")
+    .eq("tecnico_id", tecnico_id)
+    .maybeSingle();
+  const fromEnrichment = pick(tec?.enrichment_data, "ciudad_base");
+  if (fromEnrichment) return fromEnrichment;
+
+  const { data: dossier } = await sb
+    .from("candidate_dossiers")
+    .select("payload")
+    .eq("tecnico_id", tecnico_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const fromDossier = pick(dossier?.payload, "ciudad_base");
+  if (fromDossier) return fromDossier;
+
+  const { data: reg } = await sb
+    .from("eventos")
+    .select("meta")
+    .eq("type", "tecnico_registered")
+    .eq("entity_id", tecnico_id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return pick(reg?.meta, "ciudad");
+}
+
 // Classify whether this is a NEW conversation (cost kill switch applies) or
 // an in-flight one (always proceed). Per contract §9.3:
 //   in-flight = phone has tecnicos_extended row in screening | pending |
@@ -298,6 +345,7 @@ export async function handleMessage(
   let currentCandidateState: CandidateState | null = null;
   let profileComplete = false;
   let nombreFromRow: string | null = null;
+  let ciudadFromRow: string | null = null;
   {
     const { data: existing } = await baseCtx.supabase
       .from("tecnicos_extended")
@@ -316,6 +364,11 @@ export async function handleMessage(
         routingMode = "screening";
       }
       nombreFromRow = await loadDisplayName(baseCtx.supabase, existing.tecnico_id);
+      // Pre-load ciudad only for CASO C — keeps the lookup cost-aware and lets
+      // the proactive opener call read_pending_ots without a round-trip.
+      if (routingMode === "returning") {
+        ciudadFromRow = await loadCiudad(baseCtx.supabase, existing.tecnico_id);
+      }
     }
   }
 
@@ -451,6 +504,7 @@ export async function handleMessage(
     contextLines.push(`[session_state: candidate_state=null, mode=${routingMode}]`);
   }
   if (nombreFromRow) contextLines.push(`[session_name: ${nombreFromRow}]`);
+  if (ciudadFromRow) contextLines.push(`[session_ciudad: ${ciudadFromRow}]`);
   const userMessage = `${contextLines.join("\n")}\n${wrapData(text, "tecnico")}`;
 
   const errorsCollected: TurnError[] = [];

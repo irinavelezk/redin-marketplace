@@ -259,6 +259,21 @@ export const TOOL_DECLARATIONS = [
               },
             },
             referencias_externas: { type: "ARRAY", items: { type: "STRING" } },
+            tiene_vehiculo: {
+              type: "BOOLEAN",
+              description:
+                "true si el técnico tiene vehículo propio; false si no; omite si no se preguntó.",
+            },
+            tipo_vehiculo: {
+              type: "STRING",
+              description:
+                "Tipo de vehículo en palabras del técnico — moto, carro, camioneta, etc. Obligatorio si tiene_vehiculo=true.",
+            },
+            placa_vehiculo: {
+              type: "STRING",
+              description:
+                "Placa colombiana en MAYÚSCULAS sin guiones ni espacios. Carro: 3 letras + 3 dígitos (ABC123). Moto: 3 letras + 2 dígitos + 1 letra (ABC12D). Obligatoria si tiene_vehiculo=true.",
+            },
             dossier: {
               type: "STRING",
               description: "Texto libre, máx 2000 caracteres. Lo lee RRHH.",
