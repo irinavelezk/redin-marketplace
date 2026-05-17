@@ -23,6 +23,7 @@
     "eval": "tsx --env-file=.env.local qa/runner.ts",
     "smoke": "tsx --env-file=.env.local scripts/phase0-smoke.ts",
     "smoke:phase1": "tsx --env-file=.env.local scripts/phase1-tools-smoke.ts",
+    "smoke:matching": "tsx --env-file=.env.local scripts/smoke-matching-v1.ts",
     "bootstrap:legacy": "tsx --env-file=.env.local scripts/import-legacy-tecnicos.ts",
     "gen:types": "tsx --env-file=.env.local scripts/gen-supabase-types.ts",
     "typecheck": "npm --workspaces --if-present run typecheck",

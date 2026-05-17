@@ -13,3 +13,4 @@ tsconfig.tsbuildinfo
 qa/reports/*
 !qa/reports/.gitkeep
 supabase/
+.claude/
