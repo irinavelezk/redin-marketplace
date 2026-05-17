@@ -174,7 +174,15 @@ export class WhatsAppClient {
       const imageUrls = await this.handleImageMessage(msg, phone);
       const caption =
         msgContent.imageMessage.caption?.trim() ?? "";
-      const text = caption.length > 0 ? caption.slice(0, INPUT_CAP_WHATSAPP) : "[foto]";
+      // If the upload pipeline returned no URLs the architect's photo never
+      // reached Storage. Surface this to the LLM via a sentinel marker in the
+      // text so the prompt rule (manos-system.ts → "Errores de medios") can
+      // ask for a resend instead of silently storing alcance with no photo.
+      const captionText = caption.length > 0 ? caption.slice(0, INPUT_CAP_WHATSAPP) : "[foto]";
+      const text =
+        imageUrls.length === 0
+          ? `[PHOTO_UPLOAD_FAILED] ${captionText}`.trim()
+          : captionText;
       await this.opts.handlers.onMessage({ phone, text, jid, imageUrls });
       return;
     }
@@ -252,9 +260,19 @@ export class WhatsAppClient {
     msg: WAMessage,
     phone: string
   ): Promise<string> {
+    // On any failure we surface a sentinel "[AUDIO_TRANSCRIPTION_FAILED]"
+    // marker to the LLM rather than synthesising a user-facing apology.
+    // Previously the WhatsApp client itself sent the apology disguised as
+    // the architect's own text, which made it impossible for the LLM to
+    // tell "audio failed" apart from "architect literally said that" — so
+    // it might still try to set_alcance_ot with garbage. The prompt rule
+    // in manos-system.ts ("Errores de medios") binds this sentinel to a
+    // recovery script.
+    const AUDIO_FAIL_SENTINEL =
+      "[AUDIO_TRANSCRIPTION_FAILED] El arquitecto envió una nota de voz pero el sistema no pudo transcribirla.";
     try {
       if (!this.sock) {
-        return "No pude procesar la nota de voz — escríbeme un resumen breve del alcance.";
+        return AUDIO_FAIL_SENTINEL;
       }
       const buffer = await downloadMediaMessage(msg, "buffer", {}, {
         logger: pino({ level: "silent" }) as unknown as pino.Logger,
@@ -263,7 +281,7 @@ export class WhatsAppClient {
 
       const result = await transcribeAudio(buffer, "audio.ogg");
       if (!result) {
-        return "No pude procesar la nota de voz — escríbeme un resumen breve del alcance.";
+        return AUDIO_FAIL_SENTINEL;
       }
 
       log.info("audio transcribed", { phone, text_len: result.text.length });
@@ -273,7 +291,7 @@ export class WhatsAppClient {
         phone,
         error: e instanceof Error ? e.message : String(e),
       });
-      return "No pude procesar la nota de voz — escríbeme un resumen breve del alcance.";
+      return AUDIO_FAIL_SENTINEL;
     }
   }
 }

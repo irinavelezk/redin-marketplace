@@ -87,7 +87,19 @@ export async function attachPhotos(
   return ok({ ot_row_id: otRowId, total_photos: updatedPaths.length });
 }
 
-// Shared ownership verifier — used by all 3 write tools.
+// Architects scope OTs BEFORE execution. States 1-4 are pre-execution
+// (creation, validation, coordination, ready-to-execute). Once an OT moves
+// into state 5+ the technician is already engaged and scope must not be
+// rewritten — that protects the blue-collar from a moving target mid-job.
+// AppSheet literals are prefix-matched (e.g. "1. ...", "2. ...", "3. ...",
+// "4. Coordinar – Listo para ejecutar") because the suffix wording has
+// changed historically without warning.
+export const SCOPABLE_STATE_PREFIXES = ["1.", "2.", "3.", "4."] as const;
+
+// Shared ownership + state verifier — used by all 3 write tools
+// (set_alcance_ot, attach_photos, finalize_alcance). It is the single
+// authoritative gate for "can this architect mutate this OT's scope right
+// now?". Returning a ToolError short-circuits the calling tool.
 export async function verifyOtOwnership(
   ctx: ToolContext,
   otRowId: string,
@@ -127,5 +139,18 @@ export async function verifyOtOwnership(
     });
   }
 
-  return null; // ownership verified
+  // State gate: only OTs in pre-execution states 1-4 may have their scope
+  // edited from Manos. Anything else (5+ executing, 6+ closed, etc.) is
+  // rejected with not_scopable_state so the LLM can explain to the
+  // architect that the moment to capture scope has passed.
+  const estado = typeof otRow.estado === "string" ? otRow.estado.trim() : "";
+  const scopable = SCOPABLE_STATE_PREFIXES.some((p) => estado.startsWith(p));
+  if (!scopable) {
+    return err("OT is not in a scopable state", {
+      code: "not_scopable_state",
+      user_message_hint: `Esa OT está en estado "${estado}". Solo puedo capturar alcance para OTs en estados 1-4 (antes de ejecución).`,
+    });
+  }
+
+  return null; // ownership + state verified
 }

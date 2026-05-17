@@ -76,9 +76,44 @@ export async function setAlcanceOt(
     });
   }
 
-  // Ownership check.
+  // Ownership + state check (verifyOtOwnership now also rejects OTs whose
+  // estado has moved past pre-execution — code="not_scopable_state").
   const ownershipErr = await verifyOtOwnership(ctx, otRowId, arqRowId);
   if (ownershipErr) return ownershipErr;
+
+  // Quality gates — applied AFTER ownership so we don't leak whether an
+  // unauthorized OT has photos. Both rules exist to protect the technician
+  // downstream: a one-line summary or a photoless OT is effectively useless
+  // when the blue-collar is trying to quote/execute the work.
+  if (summary.length < 30) {
+    return err("alcance.summary is too short to be useful", {
+      code: "summary_too_short",
+      user_message_hint:
+        "El resumen es muy corto — describe en al menos un par de frases qué hay que hacer, materiales, condiciones.",
+    });
+  }
+
+  // Photos must already be attached via attach_photos. Without at least one
+  // photo the technician has no visual reference, which has historically
+  // produced wrong-quote, wrong-tool, wrong-day disasters in the field.
+  const { data: extRow, error: extErr } = await ctx.supabase
+    .from("ots_extended")
+    .select("photo_paths")
+    .eq("ot_row_id", otRowId)
+    .maybeSingle();
+  if (extErr) {
+    return err(`ots_extended query failed: ${extErr.message}`, { code: "db_error" });
+  }
+  const photoPaths = Array.isArray(extRow?.photo_paths)
+    ? (extRow!.photo_paths as unknown[])
+    : [];
+  if (photoPaths.length < 1) {
+    return err("no photos attached for this OT", {
+      code: "no_photos_attached",
+      user_message_hint:
+        "Necesito al menos una foto del sitio antes de guardar el alcance. Mándame una foto y vuelvo a intentar.",
+    });
+  }
 
   // Build clean alcance object.
   const alcance: AlcanceShape = {

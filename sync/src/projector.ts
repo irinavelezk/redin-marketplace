@@ -208,6 +208,88 @@ export async function tickOtAlcanceOutbox(
         .update({ appsheet_alcance_last_error: errMsg.slice(0, 500) })
         .eq("ot_row_id", otRowId);
       log.error("OT alcance AppSheet sync failed", { ot_row_id: otRowId, error: errMsg });
+
+      // Visibility plumbing — mirrors the tecnicos projector's markFailure
+      // pattern (see processAdd/markFailure below). Three rungs:
+      //   1) Always emit an `appsheet_alcance_projection_failed` event so
+      //      the dashboard/audit trail picks it up.
+      //   2) At attempt ≥ 3, ping Telegram so ops sees the repeat failure
+      //      before it dies.
+      //   3) At attempt == OT_ALCANCE_ATTEMPTS_LIMIT (5), drop the row out
+      //      of the polling window by setting pending=false and emit a
+      //      dead-letter event + final Telegram. The last_error stays
+      //      populated so the dashboard can surface "pending=false AND
+      //      last_error IS NOT NULL" as the dead-letter queue.
+      // All side-effects are best-effort: Telegram or event-insert failures
+      // are swallowed so the projector tick never crashes on a side-channel.
+      try {
+        await deps.supa.from("eventos").insert({
+          type: "appsheet_alcance_projection_failed",
+          entity_id: otRowId,
+          actor: "system:projector",
+          meta: { attempts: claimedAttempts, error: errMsg.slice(0, 500) },
+        });
+      } catch (logErr) {
+        log.warn("could not insert appsheet_alcance_projection_failed event", {
+          ot_row_id: otRowId,
+          error: logErr instanceof Error ? logErr.message : String(logErr),
+        });
+      }
+
+      if (claimedAttempts >= 3 && deps.telegram) {
+        try {
+          await deps.telegram.send(
+            `Alcance projector falla repetidamente para OT ${otRowId} — intento ${claimedAttempts}/${OT_ALCANCE_ATTEMPTS_LIMIT}: ${errMsg.slice(0, 300)}`
+          );
+        } catch (tgErr) {
+          log.warn("telegram escalation failed (alcance projector)", {
+            ot_row_id: otRowId,
+            error: tgErr instanceof Error ? tgErr.message : String(tgErr),
+          });
+        }
+      }
+
+      if (claimedAttempts >= OT_ALCANCE_ATTEMPTS_LIMIT) {
+        // Dead-letter: stop polling this row, but leave last_error set so
+        // it remains findable. Manual intervention is required to clear it.
+        try {
+          await deps.supa
+            .from("ots_extended")
+            .update({ appsheet_alcance_pending: false })
+            .eq("ot_row_id", otRowId);
+        } catch (dlErr) {
+          log.warn("could not mark alcance row dead-letter", {
+            ot_row_id: otRowId,
+            error: dlErr instanceof Error ? dlErr.message : String(dlErr),
+          });
+        }
+        try {
+          await deps.supa.from("eventos").insert({
+            type: "appsheet_alcance_dead_letter",
+            entity_id: otRowId,
+            actor: "system:projector",
+            meta: { attempts: claimedAttempts, error: errMsg.slice(0, 500) },
+          });
+        } catch (dlEvtErr) {
+          log.warn("could not insert appsheet_alcance_dead_letter event", {
+            ot_row_id: otRowId,
+            error: dlEvtErr instanceof Error ? dlEvtErr.message : String(dlEvtErr),
+          });
+        }
+        if (deps.telegram) {
+          try {
+            await deps.telegram.send(
+              `Alcance projector DEAD-LETTER for OT ${otRowId}. Manual intervention needed. Last error: ${errMsg.slice(0, 300)}`
+            );
+          } catch (tgErr) {
+            log.warn("telegram dead-letter notice failed (alcance projector)", {
+              ot_row_id: otRowId,
+              error: tgErr instanceof Error ? tgErr.message : String(tgErr),
+            });
+          }
+        }
+      }
+
       results.push({ ot_row_id: otRowId, action: "skipped", attempts: claimedAttempts, error: errMsg });
     }
   }
