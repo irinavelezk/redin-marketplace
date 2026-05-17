@@ -7,7 +7,11 @@
 // Rule catalogue:
 //   Rule 1 — Identify-first + auth gating
 //   Rule 2 — Session-bound tecnico_id override (anti-auth-bypass)
-//   Rule 3 — Max 3 tool calls per user turn
+//   Rule 3 — Max 5 tool calls per user turn (2026-05-16: bumped from 3.
+//            Cap of 3 was being hit during legitimate screening turns where
+//            the model wants identify_user → find_by_cedula → register_tecnico
+//            or similar chains; the resulting refusal terminated the loop
+//            and left the user with an empty reply.)
 //   Rule 4 — ≥50-row truncation, ranked, with "y hay más" marker
 
 import type { ToolResult } from "@redin/tools";
@@ -89,9 +93,9 @@ export function preDispatch(
   toolName: string,
   rawArgs: Record<string, unknown>
 ): PreDispatchDecision {
-  // Rule 3 — max 3 tool calls per user turn. Check FIRST so the counter stays
+  // Rule 3 — max 5 tool calls per user turn. Check FIRST so the counter stays
   // accurate even if rule 1 or 2 fires later.
-  if (session.toolCallCount >= 3) {
+  if (session.toolCallCount >= 5) {
     return {
       kind: "terminal",
       result: {

@@ -23,6 +23,34 @@ export class TelegramEscalationSink implements EscalationSink {
     );
   }
 
+  /**
+   * Send a freeform text message to HR. Used by pre-LLM short-circuits
+   * (offer-reply handler, etc.) that need to ping HR without escalating
+   * through the full EscalationSink contract. Errors are swallowed.
+   */
+  async send(text: string): Promise<void> {
+    if (!this.botToken || !this.hrChatId) {
+      log.warn("telegram sink not configured; message dropped", {
+        has_token: !!this.botToken,
+        has_chat: !!this.hrChatId,
+      });
+      return;
+    }
+    try {
+      const res = await fetch(`https://api.telegram.org/bot${this.botToken}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: this.hrChatId, text: text.slice(0, 4096) }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        log.error("telegram send failed", { status: res.status, body: body.slice(0, 200) });
+      }
+    } catch (e) {
+      log.error("telegram send threw", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   async notify(payload: {
     escalation_id: string;
     reason: string;

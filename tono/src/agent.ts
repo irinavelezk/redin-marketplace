@@ -44,6 +44,7 @@ import {
   type TurnSession,
 } from "./router";
 import { tryHandleCustomerRatingReply } from "./customer-ratings";
+import { tryMatchOfferReply } from "./offer-replies";
 
 const log = createLogger("tono:agent");
 
@@ -322,6 +323,34 @@ export async function handleMessage(
     };
   }
 
+  // Pre-LLM short-circuit #2: HR-triggered offers create ot_offers rows;
+  // workers reply "acepto"/"paso" on WhatsApp. Match the inbound to the
+  // latest open offer before invoking the LLM. Zero LLM budget burned.
+  const escalationSinkMaybe = baseCtx.escalationSink as unknown as
+    | { send?: (text: string) => Promise<void> }
+    | undefined;
+  const tgSink =
+    escalationSinkMaybe && typeof escalationSinkMaybe.send === "function"
+      ? { send: (text: string) => escalationSinkMaybe.send!(text) }
+      : null;
+  const offerReply = await tryMatchOfferReply({
+    phone,
+    text,
+    supabase: baseCtx.supabase,
+    telegram: tgSink,
+    log: (lvl, m, meta) =>
+      log[lvl](m, meta as Record<string, unknown> | undefined),
+  });
+  if (offerReply.handled) {
+    log.info("offer-reply: handled pre-LLM", { phone });
+    return {
+      reply: offerReply.reply,
+      session_id: "",
+      tool_calls: [],
+      tool_calls_full: [],
+    };
+  }
+
   const sessions = new SessionStore(baseCtx.supabase);
   const session = await sessions.getOrCreate(phone, input.channel);
   const toolCtx: ToolContext = { ...baseCtx, session_id: session.id };
@@ -495,13 +524,21 @@ export async function handleMessage(
   };
 
   // Inject session context. mode + name guide Toño's three-case routing.
+  // 2026-05-16: surface tecnico_id explicitly. Santiago's chat showed the
+  // model looping for ~6 turns asking itself "where is the tecnico_id?"
+  // because it was never visible in context. The router rewrites the arg
+  // server-side anyway (router.ts Rule 2), but the LLM needs to *see* the
+  // id to stop second-guessing.
   const contextLines = [`[session_phone: ${phone}]`];
+  const tecnicoIdForContext = turnSession.tecnico_id ?? "unknown";
   if (currentCandidateState) {
     contextLines.push(
-      `[session_state: candidate_state=${currentCandidateState}, profile_complete=${profileComplete}, mode=${routingMode}]`
+      `[session_state: candidate_state=${currentCandidateState}, profile_complete=${profileComplete}, mode=${routingMode}, tecnico_id=${tecnicoIdForContext}]`
     );
   } else {
-    contextLines.push(`[session_state: candidate_state=null, mode=${routingMode}]`);
+    contextLines.push(
+      `[session_state: candidate_state=null, mode=${routingMode}, tecnico_id=${tecnicoIdForContext}]`
+    );
   }
   if (nombreFromRow) contextLines.push(`[session_name: ${nombreFromRow}]`);
   if (ciudadFromRow) contextLines.push(`[session_ciudad: ${ciudadFromRow}]`);

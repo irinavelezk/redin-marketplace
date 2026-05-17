@@ -41,8 +41,46 @@ const log = createLogger("tono:llm");
 const MODEL = "claude-haiku-4-5";
 const TIMEOUT_MS = 30_000;
 const MAX_TOOL_ITERATIONS = 6;
-const MAX_TOKENS = 1024;
-const TEMPERATURE = 0.3;
+// 2026-05-16 hardening: raise default from 1024 → 2048. Santiago's chat hit
+// truncation mid-JSON when the model was wrongly serializing tool args as
+// natural-language text; 1024 cut it off at "fines_de_sem". Higher cap is the
+// safety net while the prompt fix forbids the JSON-as-text behavior. Env-
+// overridable so we can tune live without redeploy.
+const MAX_TOKENS = (() => {
+  const raw = process.env.TONO_MAX_TOKENS;
+  if (!raw) return 2048;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 2048;
+})();
+// 2026-05-16: 0.3 was making Toño stilted/over-deterministic. 0.5 restores
+// some warmth without destabilizing tool-call discipline. Env-overridable.
+const TEMPERATURE = (() => {
+  const raw = process.env.TONO_TEMPERATURE;
+  if (!raw) return 0.5;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0.5;
+})();
+
+// Strip any <thinking>...</thinking> or <reasoning>...</reasoning> blocks
+// that leak into visible assistant text. Belt-and-suspenders: the system
+// prompt forbids these tags, but if the model emits them anyway we MUST
+// not deliver them to WhatsApp (customer-trust destroying — see
+// chat_tono_santiago.txt 2026-05-16). Non-greedy, multi-line, case-
+// insensitive. Also collapses the leading blank lines left behind.
+const VISIBLE_THINKING_RE =
+  /<\s*(thinking|reasoning)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi;
+function stripVisibleThinking(text: string): string {
+  if (!text) return text;
+  const stripped = text.replace(VISIBLE_THINKING_RE, "");
+  // Also handle the rare case of an unclosed <thinking> tag — drop from the
+  // tag to end-of-string rather than ship it.
+  const openOnly = stripped.replace(
+    /<\s*(thinking|reasoning)\b[^>]*>[\s\S]*$/i,
+    ""
+  );
+  // Collapse 3+ blank lines (left behind by the strip) into 2.
+  return openOnly.replace(/\n{3,}/g, "\n\n").trim();
+}
 
 export interface RunTurnInput {
   // Ordered oldest-first. Each turn is a user/assistant/tool_call/tool_response
@@ -362,10 +400,14 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
       args_keys: Object.keys((b.input ?? {}) as Record<string, unknown>),
     }));
 
-    const responseText = textBlocks
+    const rawResponseText = textBlocks
       .map((b) => b.text)
       .join("\n")
       .trim();
+    // ALWAYS strip <thinking>/<reasoning> before anything else looks at the
+    // text. The prompt forbids these tags but if the model ever emits them
+    // the user must never see them.
+    const responseText = stripVisibleThinking(rawResponseText);
 
     // PRD §22 — v1 grounding heuristic. Tighten post-pilot.
     const grounded = toolCallsMeta.length === 0 || responseText.length <= 400;
@@ -419,25 +461,14 @@ export async function runTurn(input: RunTurnInput): Promise<RunTurnResult> {
         result,
         latency_ms: Date.now() - dispatchT0,
       });
-      // Router signal: max_tools_reached terminates the loop.
-      if (!result.ok && result.code === "max_tools_reached") {
-        toolResultBlocks.push({
-          type: "tool_result",
-          tool_use_id: tu.id,
-          content: JSON.stringify(result),
-          is_error: true,
-        });
-        messages.push({ role: "user", content: toolResultBlocks });
-        return {
-          reply: "",
-          toolCallsMade,
-          iterations: iter,
-          prompt_tokens: totalPromptTokens,
-          completion_tokens: totalCompletionTokens,
-          prompt_sha: TONO_PROMPT_SHA,
-          model: MODEL,
-        };
-      }
+      // Router signal: max_tools_reached. 2026-05-16 fix — do NOT force-
+      // terminate. Push the tool_result back like any other and let the
+      // model run ONE more iteration so it composes a real user-facing
+      // reply ("ya miré varias cosas, esto es lo que tengo: …") instead
+      // of returning empty text that the agent then has to paper over
+      // with the deterministic substitute. The router-imposed cap still
+      // prevents further tool calls (subsequent dispatches will be
+      // blocked at preDispatch), so this is bounded.
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: tu.id,
