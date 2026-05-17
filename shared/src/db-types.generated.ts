@@ -50,6 +50,179 @@ export type Database = {
         }
         Relationships: []
       }
+      candidate_decisions: {
+        Row: {
+          agreed_with_tono: boolean | null
+          decided_at: string
+          decided_by: string
+          decision: string
+          dossier_id: string | null
+          hr_postulacion_id: string | null
+          hr_reasoning: string | null
+          id: string
+          ot_id: string | null
+          pool_hash: string | null
+          prior_state: string
+          resulting_state: string
+          scope: string
+          tecnico_id: string | null
+          tono_confidence: number | null
+          tono_reasoning: string | null
+          tono_recommendation_at_decision_time: string | null
+          tono_recommendation_postulacion_id: string | null
+        }
+        Insert: {
+          agreed_with_tono?: boolean | null
+          decided_at?: string
+          decided_by: string
+          decision: string
+          dossier_id?: string | null
+          hr_postulacion_id?: string | null
+          hr_reasoning?: string | null
+          id?: string
+          ot_id?: string | null
+          pool_hash?: string | null
+          prior_state: string
+          resulting_state: string
+          scope?: string
+          tecnico_id?: string | null
+          tono_confidence?: number | null
+          tono_reasoning?: string | null
+          tono_recommendation_at_decision_time?: string | null
+          tono_recommendation_postulacion_id?: string | null
+        }
+        Update: {
+          agreed_with_tono?: boolean | null
+          decided_at?: string
+          decided_by?: string
+          decision?: string
+          dossier_id?: string | null
+          hr_postulacion_id?: string | null
+          hr_reasoning?: string | null
+          id?: string
+          ot_id?: string | null
+          pool_hash?: string | null
+          prior_state?: string
+          resulting_state?: string
+          scope?: string
+          tecnico_id?: string | null
+          tono_confidence?: number | null
+          tono_reasoning?: string | null
+          tono_recommendation_at_decision_time?: string | null
+          tono_recommendation_postulacion_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "candidate_decisions_dossier_id_fkey"
+            columns: ["dossier_id"]
+            isOneToOne: false
+            referencedRelation: "candidate_dossiers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_hr_postulacion_id_fkey"
+            columns: ["hr_postulacion_id"]
+            isOneToOne: false
+            referencedRelation: "postulaciones"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_ot_id_fkey"
+            columns: ["ot_id"]
+            isOneToOne: false
+            referencedRelation: "ots_mirror"
+            referencedColumns: ["row_id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnico_performance"
+            referencedColumns: ["tecnico_id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnicos_extended"
+            referencedColumns: ["tecnico_id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_tono_recommendation_postulacion_id_fkey"
+            columns: ["tono_recommendation_postulacion_id"]
+            isOneToOne: false
+            referencedRelation: "postulaciones"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      candidate_dossiers: {
+        Row: {
+          cedula: string
+          created_at: string
+          id: string
+          payload: Json
+          prompt_sha: string | null
+          schema_version: number
+          session_id: string | null
+          submitted_by: string
+          tecnico_id: string
+          tono_confidence: number
+          tono_reasoning: string
+          tono_recommendation: string
+        }
+        Insert: {
+          cedula: string
+          created_at?: string
+          id?: string
+          payload: Json
+          prompt_sha?: string | null
+          schema_version?: number
+          session_id?: string | null
+          submitted_by?: string
+          tecnico_id: string
+          tono_confidence: number
+          tono_reasoning: string
+          tono_recommendation: string
+        }
+        Update: {
+          cedula?: string
+          created_at?: string
+          id?: string
+          payload?: Json
+          prompt_sha?: string | null
+          schema_version?: number
+          session_id?: string | null
+          submitted_by?: string
+          tecnico_id?: string
+          tono_confidence?: number
+          tono_reasoning?: string
+          tono_recommendation?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "candidate_dossiers_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "candidate_dossiers_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnico_performance"
+            referencedColumns: ["tecnico_id"]
+          },
+          {
+            foreignKeyName: "candidate_dossiers_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnicos_extended"
+            referencedColumns: ["tecnico_id"]
+          },
+        ]
+      }
       clientes_mirror: {
         Row: {
           data: Json
@@ -131,6 +304,30 @@ export type Database = {
         }
         Relationships: []
       }
+      cost_kill_switch_overrides: {
+        Row: {
+          id: string
+          override_date: string
+          reason: string | null
+          reset_at: string
+          reset_by: string
+        }
+        Insert: {
+          id?: string
+          override_date: string
+          reason?: string | null
+          reset_at?: string
+          reset_by: string
+        }
+        Update: {
+          id?: string
+          override_date?: string
+          reason?: string | null
+          reset_at?: string
+          reset_by?: string
+        }
+        Relationships: []
+      }
       documentos: {
         Row: {
           id: string
@@ -187,6 +384,55 @@ export type Database = {
           type?: string
         }
         Relationships: []
+      }
+      hr_notes: {
+        Row: {
+          body: string
+          created_at: string
+          dossier_id: string | null
+          hr_user: string
+          id: string
+          tecnico_id: string
+        }
+        Insert: {
+          body: string
+          created_at?: string
+          dossier_id?: string | null
+          hr_user: string
+          id?: string
+          tecnico_id: string
+        }
+        Update: {
+          body?: string
+          created_at?: string
+          dossier_id?: string | null
+          hr_user?: string
+          id?: string
+          tecnico_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "hr_notes_dossier_id_fkey"
+            columns: ["dossier_id"]
+            isOneToOne: false
+            referencedRelation: "candidate_dossiers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "hr_notes_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnico_performance"
+            referencedColumns: ["tecnico_id"]
+          },
+          {
+            foreignKeyName: "hr_notes_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnicos_extended"
+            referencedColumns: ["tecnico_id"]
+          },
+        ]
       }
       messages: {
         Row: {
@@ -249,6 +495,143 @@ export type Database = {
           tecnico_ids?: string[]
         }
         Relationships: []
+      }
+      ot_offers: {
+        Row: {
+          created_at: string
+          document_message_id: string | null
+          expires_at: string
+          hr_user_email: string | null
+          id: string
+          meta: Json
+          ot_row_id: string
+          responded_at: string | null
+          response_text: string | null
+          sent_at: string
+          state: string
+          tecnico_id: string
+          text_message_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          document_message_id?: string | null
+          expires_at?: string
+          hr_user_email?: string | null
+          id?: string
+          meta?: Json
+          ot_row_id: string
+          responded_at?: string | null
+          response_text?: string | null
+          sent_at?: string
+          state?: string
+          tecnico_id: string
+          text_message_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          document_message_id?: string | null
+          expires_at?: string
+          hr_user_email?: string | null
+          id?: string
+          meta?: Json
+          ot_row_id?: string
+          responded_at?: string | null
+          response_text?: string | null
+          sent_at?: string
+          state?: string
+          tecnico_id?: string
+          text_message_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ot_offers_document_message_id_fkey"
+            columns: ["document_message_id"]
+            isOneToOne: false
+            referencedRelation: "outbound_messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ot_offers_ot_row_id_fkey"
+            columns: ["ot_row_id"]
+            isOneToOne: false
+            referencedRelation: "ots_mirror"
+            referencedColumns: ["row_id"]
+          },
+          {
+            foreignKeyName: "ot_offers_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnico_performance"
+            referencedColumns: ["tecnico_id"]
+          },
+          {
+            foreignKeyName: "ot_offers_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnicos_extended"
+            referencedColumns: ["tecnico_id"]
+          },
+          {
+            foreignKeyName: "ot_offers_text_message_id_fkey"
+            columns: ["text_message_id"]
+            isOneToOne: false
+            referencedRelation: "outbound_messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ots_extended: {
+        Row: {
+          alcance_jsonb: Json | null
+          alcance_pdf_path: string | null
+          appsheet_alcance_last_error: string | null
+          appsheet_alcance_pending: boolean
+          appsheet_alcance_sync_attempts: number
+          created_at: string
+          last_architect_arq_row_id: string | null
+          last_architect_phone: string | null
+          ot_row_id: string
+          photo_paths: string[]
+          updated_at: string
+        }
+        Insert: {
+          alcance_jsonb?: Json | null
+          alcance_pdf_path?: string | null
+          appsheet_alcance_last_error?: string | null
+          appsheet_alcance_pending?: boolean
+          appsheet_alcance_sync_attempts?: number
+          created_at?: string
+          last_architect_arq_row_id?: string | null
+          last_architect_phone?: string | null
+          ot_row_id: string
+          photo_paths?: string[]
+          updated_at?: string
+        }
+        Update: {
+          alcance_jsonb?: Json | null
+          alcance_pdf_path?: string | null
+          appsheet_alcance_last_error?: string | null
+          appsheet_alcance_pending?: boolean
+          appsheet_alcance_sync_attempts?: number
+          created_at?: string
+          last_architect_arq_row_id?: string | null
+          last_architect_phone?: string | null
+          ot_row_id?: string
+          photo_paths?: string[]
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ots_extended_ot_row_id_fkey"
+            columns: ["ot_row_id"]
+            isOneToOne: true
+            referencedRelation: "ots_mirror"
+            referencedColumns: ["row_id"]
+          },
+        ]
       }
       ots_mirror: {
         Row: {
@@ -444,6 +827,7 @@ export type Database = {
           channel: string
           id: string
           last_active: string | null
+          meta: Json | null
           phone: string
           started_at: string | null
         }
@@ -451,6 +835,7 @@ export type Database = {
           channel: string
           id?: string
           last_active?: string | null
+          meta?: Json | null
           phone: string
           started_at?: string | null
         }
@@ -458,6 +843,7 @@ export type Database = {
           channel?: string
           id?: string
           last_active?: string | null
+          meta?: Json | null
           phone?: string
           started_at?: string | null
         }
@@ -522,37 +908,82 @@ export type Database = {
       }
       tecnicos_extended: {
         Row: {
+          appsheet_delete_pending: boolean
+          appsheet_row_id: string | null
+          appsheet_sync_attempts: number
+          appsheet_sync_last_error: string | null
+          appsheet_sync_pending: boolean
           appsheet_synced_at: string | null
+          candidate_state: string
+          cedula: string | null
+          contact_phone: string | null
+          enrichment_data: Json | null
           estado: string | null
+          import_source: string | null
+          imported_at: string | null
           last_jid: string | null
+          legacy_activity_count: number | null
+          legacy_popularidad: number | null
           lider_phone: string | null
+          nombre: string | null
           onboarded_at: string | null
           phone: string
-          qualification_state: string | null
+          profile_complete: boolean
           source: string | null
           tecnico_id: string
+          withdrawal_reason: string | null
         }
         Insert: {
+          appsheet_delete_pending?: boolean
+          appsheet_row_id?: string | null
+          appsheet_sync_attempts?: number
+          appsheet_sync_last_error?: string | null
+          appsheet_sync_pending?: boolean
           appsheet_synced_at?: string | null
+          candidate_state?: string
+          cedula?: string | null
+          contact_phone?: string | null
+          enrichment_data?: Json | null
           estado?: string | null
+          import_source?: string | null
+          imported_at?: string | null
           last_jid?: string | null
+          legacy_activity_count?: number | null
+          legacy_popularidad?: number | null
           lider_phone?: string | null
+          nombre?: string | null
           onboarded_at?: string | null
           phone: string
-          qualification_state?: string | null
+          profile_complete?: boolean
           source?: string | null
           tecnico_id: string
+          withdrawal_reason?: string | null
         }
         Update: {
+          appsheet_delete_pending?: boolean
+          appsheet_row_id?: string | null
+          appsheet_sync_attempts?: number
+          appsheet_sync_last_error?: string | null
+          appsheet_sync_pending?: boolean
           appsheet_synced_at?: string | null
+          candidate_state?: string
+          cedula?: string | null
+          contact_phone?: string | null
+          enrichment_data?: Json | null
           estado?: string | null
+          import_source?: string | null
+          imported_at?: string | null
           last_jid?: string | null
+          legacy_activity_count?: number | null
+          legacy_popularidad?: number | null
           lider_phone?: string | null
+          nombre?: string | null
           onboarded_at?: string | null
           phone?: string
-          qualification_state?: string | null
+          profile_complete?: boolean
           source?: string | null
           tecnico_id?: string
+          withdrawal_reason?: string | null
         }
         Relationships: []
       }
@@ -574,8 +1005,166 @@ export type Database = {
         }
         Relationships: []
       }
+      turns: {
+        Row: {
+          candidate_state_at_turn: string | null
+          channel: string
+          completion_tokens: number | null
+          cost_killed: boolean
+          errors: Json | null
+          escalated: boolean
+          finished_at: string | null
+          id: string
+          inbound_text: string
+          latency_ms: number | null
+          llm_iterations: number | null
+          model: string | null
+          outbound_text: string | null
+          phone: string
+          prompt_sha: string | null
+          prompt_tokens: number | null
+          refused: boolean
+          session_id: string
+          started_at: string
+          tecnico_id: string | null
+          tool_calls: Json | null
+          turn_number: number
+        }
+        Insert: {
+          candidate_state_at_turn?: string | null
+          channel: string
+          completion_tokens?: number | null
+          cost_killed?: boolean
+          errors?: Json | null
+          escalated?: boolean
+          finished_at?: string | null
+          id?: string
+          inbound_text: string
+          latency_ms?: number | null
+          llm_iterations?: number | null
+          model?: string | null
+          outbound_text?: string | null
+          phone: string
+          prompt_sha?: string | null
+          prompt_tokens?: number | null
+          refused?: boolean
+          session_id: string
+          started_at?: string
+          tecnico_id?: string | null
+          tool_calls?: Json | null
+          turn_number: number
+        }
+        Update: {
+          candidate_state_at_turn?: string | null
+          channel?: string
+          completion_tokens?: number | null
+          cost_killed?: boolean
+          errors?: Json | null
+          escalated?: boolean
+          finished_at?: string | null
+          id?: string
+          inbound_text?: string
+          latency_ms?: number | null
+          llm_iterations?: number | null
+          model?: string | null
+          outbound_text?: string | null
+          phone?: string
+          prompt_sha?: string | null
+          prompt_tokens?: number | null
+          refused?: boolean
+          session_id?: string
+          started_at?: string
+          tecnico_id?: string | null
+          tool_calls?: Json | null
+          turn_number?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "turns_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
+      daily_llm_cost: {
+        Row: {
+          completion_tokens: number | null
+          cost_usd: number | null
+          prompt_tokens: number | null
+          session_count: number | null
+          turn_count: number | null
+          utc_date: string | null
+        }
+        Relationships: []
+      }
+      shortlist_agreement_metrics: {
+        Row: {
+          agreed_with_tono: boolean | null
+          decided_at: string | null
+          decided_day: string | null
+          decided_week: string | null
+          decision_id: string | null
+          hr_postulacion_id: string | null
+          hr_user: string | null
+          ot_id: string | null
+          tono_confidence: number | null
+          tono_reasoning: string | null
+          tono_recommendation_postulacion_id: string | null
+        }
+        Insert: {
+          agreed_with_tono?: boolean | null
+          decided_at?: string | null
+          decided_day?: never
+          decided_week?: never
+          decision_id?: string | null
+          hr_postulacion_id?: string | null
+          hr_user?: string | null
+          ot_id?: string | null
+          tono_confidence?: number | null
+          tono_reasoning?: string | null
+          tono_recommendation_postulacion_id?: string | null
+        }
+        Update: {
+          agreed_with_tono?: boolean | null
+          decided_at?: string | null
+          decided_day?: never
+          decided_week?: never
+          decision_id?: string | null
+          hr_postulacion_id?: string | null
+          hr_user?: string | null
+          ot_id?: string | null
+          tono_confidence?: number | null
+          tono_reasoning?: string | null
+          tono_recommendation_postulacion_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "candidate_decisions_hr_postulacion_id_fkey"
+            columns: ["hr_postulacion_id"]
+            isOneToOne: false
+            referencedRelation: "postulaciones"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_ot_id_fkey"
+            columns: ["ot_id"]
+            isOneToOne: false
+            referencedRelation: "ots_mirror"
+            referencedColumns: ["row_id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_tono_recommendation_postulacion_id_fkey"
+            columns: ["tono_recommendation_postulacion_id"]
+            isOneToOne: false
+            referencedRelation: "postulaciones"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       tecnico_performance: {
         Row: {
           avg_score: number | null
@@ -587,6 +1176,127 @@ export type Database = {
           tecnico_id: string | null
         }
         Relationships: []
+      }
+      tono_agreement_metrics: {
+        Row: {
+          agreed_with_tono: boolean | null
+          decided_at: string | null
+          decided_day: string | null
+          decided_week: string | null
+          decision_id: string | null
+          dossier_id: string | null
+          hr_decision: string | null
+          hr_user: string | null
+          ot_id: string | null
+          scope: string | null
+          tecnico_id: string | null
+          tono_recommendation: string | null
+        }
+        Insert: {
+          agreed_with_tono?: boolean | null
+          decided_at?: string | null
+          decided_day?: never
+          decided_week?: never
+          decision_id?: string | null
+          dossier_id?: string | null
+          hr_decision?: string | null
+          hr_user?: string | null
+          ot_id?: string | null
+          scope?: string | null
+          tecnico_id?: string | null
+          tono_recommendation?: string | null
+        }
+        Update: {
+          agreed_with_tono?: boolean | null
+          decided_at?: string | null
+          decided_day?: never
+          decided_week?: never
+          decision_id?: string | null
+          dossier_id?: string | null
+          hr_decision?: string | null
+          hr_user?: string | null
+          ot_id?: string | null
+          scope?: string | null
+          tecnico_id?: string | null
+          tono_recommendation?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "candidate_decisions_dossier_id_fkey"
+            columns: ["dossier_id"]
+            isOneToOne: false
+            referencedRelation: "candidate_dossiers"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_ot_id_fkey"
+            columns: ["ot_id"]
+            isOneToOne: false
+            referencedRelation: "ots_mirror"
+            referencedColumns: ["row_id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnico_performance"
+            referencedColumns: ["tecnico_id"]
+          },
+          {
+            foreignKeyName: "candidate_decisions_tecnico_id_fkey"
+            columns: ["tecnico_id"]
+            isOneToOne: false
+            referencedRelation: "tecnicos_extended"
+            referencedColumns: ["tecnico_id"]
+          },
+        ]
+      }
+      turn_costs: {
+        Row: {
+          completion_tokens: number | null
+          cost_usd: number | null
+          id: string | null
+          latency_ms: number | null
+          model: string | null
+          phone: string | null
+          prompt_tokens: number | null
+          session_id: string | null
+          started_at: string | null
+          turn_number: number | null
+        }
+        Insert: {
+          completion_tokens?: number | null
+          cost_usd?: never
+          id?: string | null
+          latency_ms?: number | null
+          model?: string | null
+          phone?: string | null
+          prompt_tokens?: number | null
+          session_id?: string | null
+          started_at?: string | null
+          turn_number?: number | null
+        }
+        Update: {
+          completion_tokens?: number | null
+          cost_usd?: never
+          id?: string | null
+          latency_ms?: number | null
+          model?: string | null
+          phone?: string | null
+          prompt_tokens?: number | null
+          session_id?: string | null
+          started_at?: string | null
+          turn_number?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "turns_session_id_fkey"
+            columns: ["session_id"]
+            isOneToOne: false
+            referencedRelation: "sessions"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Functions: {
