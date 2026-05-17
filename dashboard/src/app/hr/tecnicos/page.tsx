@@ -8,6 +8,7 @@ import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server
 import type { CandidateState } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import { phoneDisplay } from "@/lib/phone-display";
 
 export const dynamic = "force-dynamic";
 
@@ -72,28 +73,62 @@ function parseDecisionMeta(meta: unknown): DecisionMeta {
 // Estado column (color-coded pill), so nothing is hidden — just unstacked
 // from the top filter bar.
 //
-//   activos    → assignable workers
-//   en_proceso → being onboarded by Toño OR awaiting HR decision
+//   activos    → truly assignable workers: approved AND profile_complete=true.
+//                Legacy bootstrap workers (approved + profile_complete=false)
+//                are NOT here — they need to enrich via Toño first.
+//   en_proceso → being onboarded by Toño, awaiting HR decision, OR approved
+//                but profile not yet rich enough to match against OTs.
 //   cerrados   → out of the active pool (some reopenable per state machine)
-const BUCKETS: Record<
-  "activos" | "en_proceso" | "cerrados",
-  { label: string; states: CandidateState[] }
-> = {
-  activos: { label: "Activos", states: ["approved"] },
+type BucketKey = "activos" | "en_proceso" | "cerrados";
+
+interface BucketDef {
+  label: string;
+  match: (r: { candidate_state: CandidateState; profile_complete: boolean }) => boolean;
+}
+
+const BUCKETS: Record<BucketKey, BucketDef> = {
+  activos: {
+    label: "Activos",
+    match: (r) => r.candidate_state === "approved" && r.profile_complete === true,
+  },
   en_proceso: {
     label: "En proceso",
-    states: ["screening", "pending", "needs_call"],
+    match: (r) =>
+      r.candidate_state === "screening" ||
+      r.candidate_state === "pending" ||
+      r.candidate_state === "needs_call" ||
+      (r.candidate_state === "approved" && r.profile_complete === false),
   },
   cerrados: {
     label: "Cerrados",
-    states: ["rejected", "withdrawn", "revoked"],
+    match: (r) =>
+      r.candidate_state === "rejected" ||
+      r.candidate_state === "withdrawn" ||
+      r.candidate_state === "revoked",
   },
 };
 
-type BucketKey = keyof typeof BUCKETS;
-
 function isBucketKey(v: string | undefined): v is BucketKey {
   return v === "activos" || v === "en_proceso" || v === "cerrados";
+}
+
+// Display label + Tailwind class for the Estado pill. Splits the visual
+// representation of `approved` based on profile_complete so HR can tell
+// "ready for OTs" apart from "trusted but still being enriched".
+function displayState(r: {
+  candidate_state: CandidateState;
+  profile_complete: boolean;
+}): { label: string; className: string } {
+  if (r.candidate_state === "approved" && !r.profile_complete) {
+    return {
+      label: "Perfil incompleto",
+      className: "bg-amber-100 text-amber-800",
+    };
+  }
+  return {
+    label: r.candidate_state,
+    className: STATE_CLASS[r.candidate_state] ?? "bg-slate-100 text-slate-700",
+  };
 }
 
 export default async function HrTecnicosPage({
@@ -115,16 +150,24 @@ export default async function HrTecnicosPage({
     .select("*")
     .order("onboarded_at", { ascending: false })
     .limit(200);
-  if (bucketFilter) {
-    query = query.in("candidate_state", BUCKETS[bucketFilter].states);
+  if (bucketFilter === "activos") {
+    query = query.eq("candidate_state", "approved").eq("profile_complete", true);
+  } else if (bucketFilter === "en_proceso") {
+    // Postgres OR: in (screening,pending,needs_call) OR (approved AND profile_complete=false)
+    query = query.or(
+      "candidate_state.in.(screening,pending,needs_call),and(candidate_state.eq.approved,profile_complete.eq.false)"
+    );
+  } else if (bucketFilter === "cerrados") {
+    query = query.in("candidate_state", ["rejected", "withdrawn", "revoked"]);
   }
   const { data: tecnicos } = await query;
 
   // Bucket counts: separate light query so chip badges reflect the totals,
-  // not just the currently-filtered slice. select-only, no row payload.
+  // not just the currently-filtered slice. select state + profile_complete
+  // because `activos` and `en_proceso` need both fields to classify rows.
   const { data: stateRows } = await supa
     .from("tecnicos_extended")
-    .select("candidate_state");
+    .select("candidate_state, profile_complete");
   const totalCount = stateRows?.length ?? 0;
   const bucketCounts: Record<BucketKey, number> = {
     activos: 0,
@@ -133,7 +176,7 @@ export default async function HrTecnicosPage({
   };
   for (const r of stateRows ?? []) {
     for (const key of Object.keys(BUCKETS) as BucketKey[]) {
-      if (BUCKETS[key].states.includes(r.candidate_state)) {
+      if (BUCKETS[key].match(r)) {
         bucketCounts[key]++;
         break;
       }
@@ -309,8 +352,8 @@ export default async function HrTecnicosPage({
               {(tecnicos ?? []).map((t) => {
                 const reg = regByTec.get(t.tecnico_id);
                 const dec = lastDecisionByTec.get(t.tecnico_id);
-                const stateClass =
-                  STATE_CLASS[t.candidate_state] ?? "bg-slate-100 text-slate-700";
+                const ph = phoneDisplay(t);
+                const stateDisplay = displayState(t);
                 return (
                   <tr key={t.tecnico_id} className="border-t border-slate-100">
                     <td className="px-3 py-2">
@@ -321,17 +364,19 @@ export default async function HrTecnicosPage({
                         {t.nombre ?? reg?.nombre ?? "—"}
                       </Link>
                       <div className="text-xs">
-                        {t.contact_phone ? (
+                        {ph.callable ? (
                           <a
-                            href={`tel:${t.contact_phone}`}
+                            href={`tel:${ph.callable}`}
                             className="text-slate-700 font-medium hover:underline underline-offset-2"
                           >
-                            📞 {t.contact_phone}
+                            📞 {ph.callable}
                           </a>
                         ) : (
                           <span className="text-slate-400">Sin teléfono de contacto</span>
                         )}
-                        <div className="text-slate-400">WA {t.phone}</div>
+                        {ph.waLabel && (
+                          <div className="text-slate-400">WA {ph.waLabel}</div>
+                        )}
                       </div>
                     </td>
                     <td className="px-3 py-2">
@@ -345,9 +390,9 @@ export default async function HrTecnicosPage({
                     </td>
                     <td className="px-3 py-2">
                       <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${stateClass}`}
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${stateDisplay.className}`}
                       >
-                        {t.candidate_state}
+                        {stateDisplay.label}
                       </span>
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-slate-700">

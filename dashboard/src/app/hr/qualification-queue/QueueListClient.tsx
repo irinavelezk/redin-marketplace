@@ -27,6 +27,7 @@ import { useState, useTransition } from "react";
 import Link from "next/link";
 import { submitDecision, appendHrNote } from "@/lib/decisions";
 import type { CandidateState, HrAction, TonoRecommendation } from "@redin/shared";
+import { phoneDisplay } from "@/lib/phone-display";
 
 export interface QueueDossier {
   id: string;
@@ -55,6 +56,7 @@ export interface QueueItem {
   display_ciudad: string;
   contact_phone: string | null;
   phone: string;
+  last_jid: string | null;
   candidate_state: CandidateState;
   onboarded_at_human: string;
   dossier: QueueDossier | null;
@@ -264,17 +266,26 @@ function QueueCard({
             )}
           </div>
           <div className="text-xs text-slate-500 mt-0.5">
-            {tec.contact_phone ? (
-              <a
-                href={`tel:${tec.contact_phone}`}
-                className="text-slate-700 font-medium underline-offset-2 hover:underline"
-              >
-                📞 {tec.contact_phone}
-              </a>
-            ) : (
-              <span className="text-slate-400">Sin teléfono de contacto</span>
-            )}
-            <span className="text-slate-400"> · WA {tec.phone}</span>
+            {(() => {
+              const ph = phoneDisplay(tec);
+              return (
+                <>
+                  {ph.callable ? (
+                    <a
+                      href={`tel:${ph.callable}`}
+                      className="text-slate-700 font-medium underline-offset-2 hover:underline"
+                    >
+                      📞 {ph.callable}
+                    </a>
+                  ) : (
+                    <span className="text-slate-400">Sin teléfono de contacto</span>
+                  )}
+                  {ph.waLabel && (
+                    <span className="text-slate-400"> · WA {ph.waLabel}</span>
+                  )}
+                </>
+              );
+            })()}
             {tec.dossier && <> · cédula {tec.dossier.cedula}</>} · onboarded{" "}
             {tec.onboarded_at_human}
           </div>

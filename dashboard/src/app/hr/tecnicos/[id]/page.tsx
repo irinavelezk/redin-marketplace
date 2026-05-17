@@ -11,6 +11,7 @@ import { otTitle } from "@/lib/ot-display";
 import type { CandidateState, TonoRecommendation, HrAction } from "@redin/shared";
 import { redirect } from "next/navigation";
 import Link from "next/link";
+import { phoneDisplay } from "@/lib/phone-display";
 
 export const dynamic = "force-dynamic";
 
@@ -228,7 +229,16 @@ export default async function TecnicoDetailPage({
   ];
   timeline.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
-  const stateClass = STATE_CLASS[tec.candidate_state] ?? "bg-slate-100 text-slate-700";
+  // Visual pill: legacy / pre-enrichment workers (approved + profile_complete=false)
+  // get an "Perfil incompleto" amber chip so HR can distinguish them from truly
+  // assignable workers.
+  const isIncompleteApproved =
+    tec.candidate_state === "approved" && !tec.profile_complete;
+  const stateClass = isIncompleteApproved
+    ? "bg-amber-100 text-amber-800"
+    : STATE_CLASS[tec.candidate_state] ?? "bg-slate-100 text-slate-700";
+  const stateLabel = isIncompleteApproved ? "Perfil incompleto" : tec.candidate_state;
+  const ph = phoneDisplay(tec);
   const banner = tec.appsheet_sync_pending
     ? appsheetBannerText(tec.appsheet_sync_last_error)
     : null;
@@ -264,17 +274,19 @@ export default async function TecnicoDetailPage({
               {tec.nombre ?? reg.nombre ?? "(sin nombre)"}
             </h1>
             <div className="text-sm text-slate-500 mt-1">
-              {tec.contact_phone ? (
+              {ph.callable ? (
                 <a
-                  href={`tel:${tec.contact_phone}`}
+                  href={`tel:${ph.callable}`}
                   className="text-slate-700 font-medium hover:underline underline-offset-2"
                 >
-                  📞 {tec.contact_phone}
+                  📞 {ph.callable}
                 </a>
               ) : (
                 <span className="text-slate-400">Sin teléfono de contacto</span>
               )}
-              <span className="text-slate-400"> · WA {tec.phone}</span>
+              {ph.waLabel && (
+                <span className="text-slate-400"> · WA {ph.waLabel}</span>
+              )}
               {tec.cedula && <> · cédula {tec.cedula}</>} · {reg.ciudad ?? "—"} ·
               onboarded {fmt(tec.onboarded_at)}
             </div>
@@ -295,7 +307,7 @@ export default async function TecnicoDetailPage({
             )}
           </div>
           <span className={`inline-block rounded-full px-3 py-1 text-sm ${stateClass}`}>
-            {tec.candidate_state}
+            {stateLabel}
           </span>
         </div>
 

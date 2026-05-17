@@ -208,6 +208,7 @@ export default async function HrQualificationQueuePage() {
       display_ciudad: dossier?.ciudad_base ?? reg?.ciudad ?? "—",
       contact_phone: tec.contact_phone ?? null,
       phone: tec.phone,
+      last_jid: tec.last_jid ?? null,
       candidate_state: tec.candidate_state,
       onboarded_at_human: fmtTime(tec.onboarded_at),
       dossier,
