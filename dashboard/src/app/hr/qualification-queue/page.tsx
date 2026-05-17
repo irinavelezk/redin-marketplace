@@ -122,7 +122,7 @@ export default async function HrQualificationQueuePage() {
 
   // TODO(scale): two-query stitch is O(N+latest-dossier-per-N). Pilot scale
   // (~50 candidates) is fine; revisit with a Postgres view or RPC at >5k.
-  const [regEventsRes, dossiersRes, notesRes, legacyMatchRes] = ids.length
+  const [regEventsRes, dossiersRes, notesRes] = ids.length
     ? await Promise.all([
         supa
           .from("eventos")
@@ -140,14 +140,8 @@ export default async function HrQualificationQueuePage() {
           .select("*")
           .in("tecnico_id", ids)
           .order("created_at", { ascending: false }),
-        supa
-          .from("eventos")
-          .select("entity_id, meta, created_at")
-          .eq("type", "possible_legacy_match")
-          .in("entity_id", ids)
-          .order("created_at", { ascending: false }),
       ])
-    : [{ data: [] }, { data: [] }, { data: [] }, { data: [] }];
+    : [{ data: [] }, { data: [] }, { data: [] }];
 
   const regByTec = new Map<string, RegisteredMeta>();
   for (const e of regEventsRes.data ?? []) {
@@ -185,24 +179,6 @@ export default async function HrQualificationQueuePage() {
     notesByTec.set(n.tecnico_id, arr);
   }
 
-  // Soft signal: list of possible legacy matches detected at submission time.
-  // Only the latest event per tecnico is surfaced; older ones are stale.
-  const legacyMatchesByTec = new Map<string, QueueItem["legacy_matches"]>();
-  for (const e of legacyMatchRes.data ?? []) {
-    if (!e.entity_id || legacyMatchesByTec.has(e.entity_id)) continue;
-    const meta = e.meta as Record<string, unknown> | null;
-    const rawMatches = meta && Array.isArray(meta.matches) ? meta.matches : [];
-    const matches = rawMatches
-      .filter((m): m is Record<string, unknown> => !!m && typeof m === "object")
-      .map((m) => ({
-        legacy_tecnico_id: String(m.legacy_tecnico_id ?? ""),
-        legacy_nombre: String(m.legacy_nombre ?? ""),
-        similarity: typeof m.similarity === "number" ? m.similarity : 0,
-      }))
-      .filter((m) => m.legacy_tecnico_id && m.legacy_nombre);
-    if (matches.length > 0) legacyMatchesByTec.set(e.entity_id, matches);
-  }
-
   const sorted = [...(tecnicos ?? [])].sort((a, b) => {
     const da = latestDossierByTec.get(a.tecnico_id);
     const db_ = latestDossierByTec.get(b.tecnico_id);
@@ -237,7 +213,6 @@ export default async function HrQualificationQueuePage() {
       onboarded_at_human: fmtTime(tec.onboarded_at),
       dossier,
       notes: notesByTec.get(tec.tecnico_id) ?? [],
-      legacy_matches: legacyMatchesByTec.get(tec.tecnico_id) ?? [],
     };
   });
 

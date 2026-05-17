@@ -26,6 +26,8 @@ const VALID_TIPOS = new Set([
   "cert_estudios",
   "cert_trabajos_previos",
   "evidencia_arl",
+  // 2026-05-17: EPS evidence (self-declared eps_activa + uploaded carné)
+  "evidencia_eps",
 ]);
 
 function safeFilename(name: string): string {

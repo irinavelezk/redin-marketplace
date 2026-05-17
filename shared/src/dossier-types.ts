@@ -360,6 +360,9 @@ export interface CandidateDossier {
   /** doc id from upload_documento tipo='evidencia_arl' if supplied */
   arl_doc_id?: string;
 
+  /** doc id from upload_documento tipo='evidencia_eps' if supplied (2026-05-17) */
+  eps_doc_id?: string;
+
   /**
    * Which optional fields were NOT provided. Populated by submit_candidate_dossier
    * from the absent optional fields above. HR queue reads this to render soft

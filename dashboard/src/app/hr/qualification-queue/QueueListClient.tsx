@@ -50,12 +50,6 @@ export interface QueueNote {
   created_at_human: string;
 }
 
-export interface LegacyMatch {
-  legacy_tecnico_id: string;
-  legacy_nombre: string;
-  similarity: number;
-}
-
 export interface QueueItem {
   tecnico_id: string;
   display_name: string;
@@ -67,16 +61,19 @@ export interface QueueItem {
   onboarded_at_human: string;
   dossier: QueueDossier | null;
   notes: QueueNote[];
-  legacy_matches: LegacyMatch[];
 }
 
 const REMOVES_FROM_QUEUE = new Set<HrAction>(["approve", "reject"]);
 
-// Story 17: maps missing_optional key → human-readable badge label.
+// Story 17 + 2026-05-17 (eps): maps missing_optional key → human-readable badge.
+// "Sin doc X" means "no document uploaded" — independent of whether the worker
+// self-declared having it in cumplimiento.<x>_activa. The declaration appears in
+// tono_reasoning; the badge reflects only document attachment.
 const MISSING_OPTIONAL_LABELS: Record<string, string> = {
-  ARL: "Sin ARL",
-  cert_estudios: "Sin cert. estudios",
-  cert_trabajos_previos: "Sin cert. trabajos previos",
+  ARL: "Sin doc ARL",
+  EPS: "Sin doc EPS",
+  cert_estudios: "Sin doc estudios",
+  cert_trabajos_previos: "Sin doc trabajos previos",
   vehiculo: "Sin vehículo",
   // Defensive: surfaces only if a tiene_vehiculo=true dossier ever lands without
   // a valid placa. submit_candidate_dossier.validateVehicle should prevent this.
@@ -296,30 +293,6 @@ function QueueCard({
             {tec.dossier && <> · cédula {tec.dossier.cedula}</>} · onboarded{" "}
             {tec.onboarded_at_human}
           </div>
-
-          {tec.legacy_matches.length > 0 && (
-            <div className="mt-2 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900">
-              <span className="font-semibold">⚠ Posible legacy:</span>{" "}
-              este nombre se parece a {tec.legacy_matches.length === 1 ? "un técnico" : `${tec.legacy_matches.length} técnicos`}{" "}
-              legacy de AppSheet. Confirma antes de aprobar para evitar duplicado.
-              <ul className="mt-1 space-y-0.5">
-                {tec.legacy_matches.map((m) => (
-                  <li key={m.legacy_tecnico_id}>
-                    →{" "}
-                    <Link
-                      href={`/hr/tecnicos/${encodeURIComponent(m.legacy_tecnico_id)}`}
-                      className="font-medium underline-offset-2 hover:underline"
-                    >
-                      {m.legacy_nombre}
-                    </Link>{" "}
-                    <span className="text-amber-700">
-                      ({Math.round(m.similarity * 100)}% similar)
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
 
           {tec.dossier && badge && (
             <div className="mt-3 space-y-1">

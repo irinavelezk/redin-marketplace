@@ -23,7 +23,6 @@ import type { ToolContext } from "./context";
 import type { Json } from "@redin/shared";
 import { ok, err, type ToolResult } from "./types";
 import { recordEvent } from "./events";
-import { detectLegacyMatches } from "./detect-legacy-match";
 import {
   CIUDAD_CANONICAL,
   CATEGORIA_VALUES,
@@ -280,6 +279,9 @@ function validatePayload(
   const placaNormalized = vehCheck.placa;
 
   // Compute missing_optional: which optional doc fields were NOT provided.
+  // NOTE: "missing" here means "no document uploaded" — independent of whether
+  // the worker self-declared having the doc in `cumplimiento` (arl_activa/eps_activa).
+  // HR badges should reflect that distinction (see QueueListClient labels).
   const missingOptional: string[] = [];
   if (!raw.cert_estudios_doc_id) missingOptional.push("cert_estudios");
   if (!raw.cert_trabajos_previos_doc_id) missingOptional.push("cert_trabajos_previos");
@@ -287,6 +289,7 @@ function validatePayload(
     missingOptional.push("vehiculo");
   }
   if (!raw.arl_doc_id) missingOptional.push("ARL");
+  if (!raw.eps_doc_id) missingOptional.push("EPS");
 
   const normalized: CandidateDossier = {
     schema_version: 1,
@@ -334,6 +337,7 @@ function validatePayload(
     tipo_vehiculo: raw.tipo_vehiculo ?? undefined,
     placa_vehiculo: placaNormalized ?? undefined,
     arl_doc_id: raw.arl_doc_id ?? undefined,
+    eps_doc_id: raw.eps_doc_id ?? undefined,
     missing_optional: missingOptional,
     tono_recommendation: raw.tono_recommendation,
     tono_confidence: raw.tono_confidence,
@@ -640,48 +644,6 @@ export async function submitCandidateDossier(
       resumed_from_withdrawn: resumedFromWithdrawn,
     },
   });
-
-  // Soft signal: check the worker's nombre against approved+incomplete legacy
-  // bootstrap rows. We DON'T change the flow on a hit (per policy 2026-05-16
-  // the worker just gets re-screened as new); we only record an event so the
-  // HR queue card can surface a "posible legacy" badge for manual merge
-  // consideration. Non-fatal — failures here never affect the submission.
-  try {
-    const { data: tecRow } = await ctx.supabase
-      .from("tecnicos_extended")
-      .select("nombre")
-      .eq("tecnico_id", effectiveTecnicoId)
-      .maybeSingle();
-    const nombre = (tecRow?.nombre as string | null | undefined)?.trim() || "";
-    if (nombre) {
-      const matches = await detectLegacyMatches(
-        ctx.supabase,
-        nombre,
-        effectiveTecnicoId
-      );
-      if (matches.length > 0) {
-        await recordEvent(ctx, {
-          type: "possible_legacy_match",
-          entity_id: effectiveTecnicoId,
-          actor: "system",
-          meta: {
-            detection_query: nombre,
-            matches: matches.map((m) => ({
-              legacy_tecnico_id: m.tecnico_id,
-              legacy_nombre: m.nombre,
-              similarity: m.similarity,
-              distance: m.distance,
-            })),
-          },
-        });
-      }
-    }
-  } catch (e) {
-    ctx.logger.warn("legacy name match detection failed (non-fatal)", {
-      tecnico_id: effectiveTecnicoId,
-      error: e instanceof Error ? e.message : String(e),
-    });
-  }
 
   const out: SubmitCandidateDossierOutput = {
     code: mergeOccurred ? ("merged" as SubmitDossierCode) : "submitted",

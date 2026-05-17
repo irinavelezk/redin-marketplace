@@ -133,7 +133,19 @@ export const TOOL_DECLARATIONS = [
         tecnico_id: { type: "STRING" },
         tipo: {
           type: "STRING",
-          enum: ["cedula", "cert_electrica", "arl", "ss", "altura", "antecedentes", "otro"],
+          enum: [
+            "cedula",
+            "cert_electrica",
+            "arl",
+            "ss",
+            "altura",
+            "antecedentes",
+            "otro",
+            "cert_estudios",
+            "cert_trabajos_previos",
+            "evidencia_arl",
+            "evidencia_eps",
+          ],
         },
         filename: { type: "STRING" },
         storage_path: {
@@ -273,6 +285,26 @@ export const TOOL_DECLARATIONS = [
               type: "STRING",
               description:
                 "Placa colombiana en MAYÚSCULAS sin guiones ni espacios. Carro: 3 letras + 3 dígitos (ABC123). Moto: 3 letras + 2 dígitos + 1 letra (ABC12D). Obligatoria si tiene_vehiculo=true.",
+            },
+            cert_estudios_doc_id: {
+              type: "STRING",
+              description:
+                "documento_id retornado por upload_documento(tipo='cert_estudios'). Opcional — solo si el técnico envió foto del título/constancia.",
+            },
+            cert_trabajos_previos_doc_id: {
+              type: "STRING",
+              description:
+                "documento_id retornado por upload_documento(tipo='cert_trabajos_previos'). Opcional.",
+            },
+            arl_doc_id: {
+              type: "STRING",
+              description:
+                "documento_id retornado por upload_documento(tipo='evidencia_arl'). Opcional — solo si el técnico envió foto del carné/constancia de ARL. Independiente de cumplimiento.arl_activa (declaración).",
+            },
+            eps_doc_id: {
+              type: "STRING",
+              description:
+                "documento_id retornado por upload_documento(tipo='evidencia_eps'). Opcional — solo si el técnico envió foto del carné/constancia de EPS. Independiente de cumplimiento.eps_activa (declaración).",
             },
             dossier: {
               type: "STRING",
