@@ -467,6 +467,14 @@ export default async function HrPipelinePage() {
                       ? "0 postulaciones"
                       : `${posts.length} ${posts.length === 1 ? "postulación" : "postulaciones"}${preselCount ? ` · ${preselCount} preseleccionada${preselCount === 1 ? "" : "s"}` : ""}${postuladoCount && preselCount ? ` · ${postuladoCount} esperando` : ""}`}
                   </div>
+                  {status.key === "sin_postulaciones" && (
+                    <Link
+                      href={`/hr/shortlist/${encodeURIComponent(ot.row_id)}`}
+                      className="text-[11px] text-amber-600 hover:text-amber-700 font-medium"
+                    >
+                      Sugerir técnicos →
+                    </Link>
+                  )}
                 </div>
               </div>
 

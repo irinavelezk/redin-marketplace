@@ -12,10 +12,12 @@ import { otTitle, tecnicoLabel } from "@/lib/ot-display";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import type { ContratoStatus, PostulacionState, WorkerProfile, OtAlcance } from "@redin/shared";
+import { rankTecnicosForOT } from "@redin/shared";
 import Link from "next/link";
 import { Suspense } from "react";
 import { makeDefaultToolContext } from "@redin/tools";
 import { recommendShortlistCandidate } from "@redin/tools/recommend-shortlist-candidate";
+import { sendOffer } from "./offer-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -601,11 +603,91 @@ export default async function HrShortlistPage({ params }: Props) {
           );
         })}
         {ranked.length === 0 && (
-          <li className="card p-4 text-sm text-slate-500">
-            Sin postulaciones para esta OT.
-          </li>
+          <EmptyStateRanking otId={otId} />
         )}
       </ul>
     </div>
+  );
+}
+
+// ---- Empty-state ranking block ----
+// Renders when there are zero postulaciones for this OT. Calls the v1 supply
+// engine (rankTecnicosForOT) to surface the top approved técnicos so HR can
+// push an offer manually via the "Enviar oferta" button per row.
+async function EmptyStateRanking({ otId }: { otId: string }) {
+  const supa = serviceClient();
+  const result = await rankTecnicosForOT(supa, otId, { limit: 10 });
+
+  // Friendly fallback: no approved técnicos in the system yet.
+  if (result.ranked.length === 0 && result.total_approved === 0) {
+    return (
+      <li className="card p-4 text-sm text-slate-500">
+        No hay técnicos aprobados en el sistema todavía.{" "}
+        <Link href="/hr/tecnicos" className="text-amber-600 hover:text-amber-700">
+          Ver candidatos →
+        </Link>
+      </li>
+    );
+  }
+
+  return (
+    <>
+      <li className="card p-4 border-l-4 border-amber-400 bg-amber-50">
+        <div className="text-sm font-semibold text-slate-900">
+          Top 10 técnicos aprobados — envíales una oferta para activar este trabajo
+        </div>
+        <div className="text-xs text-slate-600 mt-1">
+          Sin postulaciones para esta OT. Estos son los técnicos aprobados mejor
+          rankeados; haz clic en &ldquo;Enviar oferta&rdquo; para que reciban un
+          WhatsApp con el alcance del trabajo.
+        </div>
+      </li>
+      {result.ranked.map((r) => (
+        <li key={r.tecnico_id} className="card p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <Link
+                href={`/hr/tecnicos/${encodeURIComponent(r.tecnico_id)}`}
+                className="font-medium text-slate-900 hover:text-amber-700"
+              >
+                {r.nombre || "(sin nombre)"}
+                {r.ciudad ? <span className="text-slate-500"> · {r.ciudad}</span> : null}
+              </Link>
+              {r.reasons.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {r.reasons.map((reason, idx) => (
+                    <span
+                      key={idx}
+                      className="text-[11px] bg-slate-100 text-slate-600 rounded-full px-2 py-0.5"
+                    >
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <div className="text-xs text-slate-500 mt-1">
+                fit {r.score_fit.toFixed(2)} · prox {r.score_proximidad.toFixed(0)} ·{" "}
+                calidad {r.score_calidad !== null ? r.score_calidad.toFixed(1) : "—"}
+              </div>
+            </div>
+            <div className="shrink-0">
+              <form action={sendOffer}>
+                <input type="hidden" name="ot_row_id" value={otId} />
+                <input type="hidden" name="tecnico_id" value={r.tecnico_id} />
+                <button
+                  type="submit"
+                  className="text-xs bg-amber-500 hover:bg-amber-600 text-white rounded-md px-3 py-1.5"
+                >
+                  Enviar oferta
+                </button>
+              </form>
+            </div>
+          </div>
+        </li>
+      ))}
+      <li className="text-xs text-slate-500 px-2">
+        OT especialidad: {result.ot_especialidad ?? "sin declarar"} (fuente: {result.alcance_source})
+      </li>
+    </>
   );
 }
