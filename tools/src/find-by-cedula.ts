@@ -83,20 +83,16 @@ export async function findByCedula(
   }
 
   if (!data) {
-    // Cedula not in tecnicos_extended. Two possibilities the agent must
-    // resolve before resuming screening:
-    //   1. cold worker (real not-found)
-    //   2. legacy worker contacting from a new phone — their tecnicos_extended
-    //      row exists with cedula=NULL, so cedula lookup misses. The legacy
-    //      bootstrap event has the name; find_legacy_by_name finds it.
-    // Encoded as a two-step next_action: the agent MUST call
-    // find_legacy_by_name next; that tool's own next_action will tell the
-    // agent whether to escalate (similarity hit) or proceed (no match).
+    // Cedula not in tecnicos_extended. Per policy decision 2026-05-16, we no
+    // longer attempt fuzzy name reconciliation with the legacy bootstrap rows:
+    // false positives outweigh the benefit, and re-screening a legacy worker
+    // who messages from a new phone produces a duplicate row that's easy to
+    // merge by hand. Just continue screening.
     return ok({
       found: false,
-      next_action: "check_legacy_name_then_proceed",
+      next_action: "proceed_with_screening",
       suggested_reply:
-        "Cédula nueva. Antes de seguir, déjame confirmar el nombre con find_legacy_by_name.",
+        "Cédula nueva. Sigamos con tu calificación normal.",
     });
   }
 

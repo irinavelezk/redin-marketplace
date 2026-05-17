@@ -132,9 +132,6 @@ export async function dispatchTool(
     case "complete_legacy_profile":
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return completeLegacyProfile(ctx, args as any);
-    case "find_legacy_by_name":
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return findLegacyByName(ctx, args as any);
     case "set_qualification_state":
       // Deprecated. Routed to the compat shim. Not in schemas.ts so the LLM
       // never sees it; HR dashboard server actions still call it by name

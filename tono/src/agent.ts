@@ -14,7 +14,7 @@
 //  - cost kill switch on NEW conversations only (in-flight conversations
 //    always continue, per contract §9.3)
 //  - new tools: submit_candidate_dossier, find_by_cedula,
-//    mark_candidate_withdrawn, complete_legacy_profile, find_legacy_by_name
+//    mark_candidate_withdrawn, complete_legacy_profile
 
 import {
   createLogger,

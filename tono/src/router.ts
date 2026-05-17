@@ -37,7 +37,6 @@ export function createTurnSession(): TurnSession {
 // - mark_candidate_withdrawn — needs tecnico_id; takes tecnico_id arg
 // - complete_legacy_profile  — needs tecnico_id; takes tecnico_id arg
 // - find_by_cedula           — pure read; auth-free; no tecnico_id arg
-// - find_legacy_by_name      — pure read; auth-free; no tecnico_id arg
 const AUTH_GATED_TOOLS = new Set([
   "create_postulacion",
   "upload_documento",

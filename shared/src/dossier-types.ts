@@ -469,16 +469,14 @@ export interface SubmitCandidateDossierOutput {
  *                                      escalate_to_hr (with reason
  *                                      "rejected_returning") after telling
  *                                      the worker. Do NOT auto-reopen.
- *   check_legacy_name_then_proceed  — found=false. The cedula isn't on any
- *                                      row, but a legacy worker may be
- *                                      writing from a new phone (their
- *                                      legacy row has cedula=NULL). The
- *                                      agent MUST call find_legacy_by_name
- *                                      with the worker's full name (already
- *                                      captured by register_tecnico) ONCE
- *                                      before resuming screening. The chain
- *                                      continues via find_legacy_by_name's
- *                                      own next_action.
+ *   proceed_with_screening          — found=false. Continue the normal CASE B
+ *                                      screening flow. Per the 2026-05-16
+ *                                      policy, we no longer attempt fuzzy
+ *                                      name reconciliation against legacy
+ *                                      bootstrap rows: any legacy worker
+ *                                      messaging from a new phone is treated
+ *                                      as a new candidate. Duplicates, if
+ *                                      they happen, are merged manually.
  */
 export type FindByCedulaNextAction =
   | "resume_screening"
@@ -486,7 +484,7 @@ export type FindByCedulaNextAction =
   | "tell_user_team_will_call"
   | "tell_user_already_approved"
   | "tell_user_was_rejected"
-  | "check_legacy_name_then_proceed";
+  | "proceed_with_screening";
 
 export interface FindByCedulaInput {
   cedula: string;

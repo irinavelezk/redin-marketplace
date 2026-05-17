@@ -319,7 +319,7 @@ export const TOOL_DECLARATIONS = [
   {
     name: "find_by_cedula",
     description:
-      "Busca un técnico por cédula. Llámalo después de capturar la cédula del usuario, ANTES de submit_candidate_dossier, para detectar regresos en otro teléfono. Read-only.\n\nRetorna SIEMPRE un campo `next_action` que TE DICE qué hacer:\n- 'resume_screening'                → encontrado en screening|withdrawn; sigue calificando, submit_candidate_dossier al final.\n- 'tell_user_already_in_queue'      → encontrado en pending; dile que el equipo está validando, NO sigas screening.\n- 'tell_user_team_will_call'        → encontrado en needs_call; dile que el equipo lo va a llamar, NO sigas.\n- 'tell_user_already_approved'      → encontrado en approved; dile que ya está registrado y aprobado, NO sigas.\n- 'tell_user_was_rejected'          → encontrado en rejected|revoked; dile que el equipo lo contactará y llama escalate_to_hr con reason='rejected_returning'.\n- 'check_legacy_name_then_proceed'  → no encontrado. NO sigas con screening todavía: PRIMERO llama find_legacy_by_name(<nombre completo del técnico>) ONCE. Esa herramienta tiene su propio next_action que continúa la cadena (escalar o proceder).\n\nTambién retorna `suggested_reply` (frase corta en español que puedes parafrasear) y, si found=true, tecnico_id + candidate_state + last_phone + nombre.\n\nLA INSTRUCCIÓN DE next_action GANA sobre cualquier momentum de la conversación. No la ignores.",
+      "Busca un técnico por cédula. Llámalo después de capturar la cédula del usuario, ANTES de submit_candidate_dossier, para detectar regresos en otro teléfono. Read-only.\n\nRetorna SIEMPRE un campo `next_action` que TE DICE qué hacer:\n- 'resume_screening'           → encontrado en screening|withdrawn; sigue calificando, submit_candidate_dossier al final.\n- 'tell_user_already_in_queue' → encontrado en pending; dile que el equipo está validando, NO sigas screening.\n- 'tell_user_team_will_call'   → encontrado en needs_call; dile que el equipo lo va a llamar, NO sigas.\n- 'tell_user_already_approved' → encontrado en approved; dile que ya está registrado y aprobado, NO sigas.\n- 'tell_user_was_rejected'     → encontrado en rejected|revoked; dile que el equipo lo contactará y llama escalate_to_hr con reason='rejected_returning'.\n- 'proceed_with_screening'     → no encontrado. Sigue con el flujo normal de calificación.\n\nTambién retorna `suggested_reply` (frase corta en español que puedes parafrasear) y, si found=true, tecnico_id + candidate_state + last_phone + nombre.\n\nLA INSTRUCCIÓN DE next_action GANA sobre cualquier momentum de la conversación. No la ignores.",
     parameters: {
       type: "OBJECT",
       properties: {
@@ -392,21 +392,6 @@ export const TOOL_DECLARATIONS = [
         },
       },
       required: ["tecnico_id", "profile_data"],
-    },
-  },
-  {
-    name: "find_legacy_by_name",
-    description:
-      "Busca técnicos legacy aprobados con perfil incompleto cuyo nombre se parezca al nombre dado (Levenshtein ≤ 2 o similitud ≥ 0.80, con normalización española). Llámalo cuando find_by_cedula retornó next_action='check_legacy_name_then_proceed' Y el técnico ya te dio su nombre completo (típicamente vía register_tecnico).\n\nRetorna SIEMPRE un `next_action` que continúa la cadena:\n- 'escalate_legacy_reconciliation' → hubo ≥1 match con similarity ≥ 0.80; llama escalate_to_hr INMEDIATAMENTE con reason='possible_legacy_reconciliation'. NO auto-fusiones, NO sigas screening. Dile al técnico que el equipo va a verificar.\n- 'proceed_with_screening'         → 0 matches o todos por debajo del umbral; sigue con el flujo normal de calificación.\n\nLA INSTRUCCIÓN DE next_action GANA sobre cualquier momentum de la conversación.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        name: {
-          type: "STRING",
-          description: "Nombre completo dado por el técnico",
-        },
-      },
-      required: ["name"],
     },
   },
 ] as const;
