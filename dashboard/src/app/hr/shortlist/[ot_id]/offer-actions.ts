@@ -22,8 +22,10 @@ import { redirect } from "next/navigation";
 import { serverClientBoundToCookies, serviceClient } from "@/lib/supabase-server";
 import { normalizePhone } from "@redin/shared";
 
-// Cleanest formatter for the message text — exported for review/tests.
-export function buildOfferMessageBody(args: {
+// Cleanest formatter for the message text. NOT exported — Next.js requires
+// every export from a "use server" module to be an async function. The function
+// only has one caller (sendOffer below), so keeping it internal is fine.
+function buildOfferMessageBody(args: {
   workerNombre: string;
   otCiudad: string;
 }): string {
